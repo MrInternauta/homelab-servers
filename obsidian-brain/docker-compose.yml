@@ -1,19 +1,24 @@
-version: '3.8'
-
+# Obsidian — full Obsidian GUI in the browser (KasmVNC).
+# http://localhost:3000  /  https://localhost:3001
 services:
   obsidian:
     image: lscr.io/linuxserver/obsidian:latest
     container_name: obsidian
     security_opt:
-      - seccomp:unconfined # Necessary for Chromium-based apps inside Docker
+      # Chromium-based apps need this to run inside Docker.
+      - seccomp:unconfined
     environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=America/Mexico_City # Change to your timezone, e.g., America/New_York
+      # Taken from the shared host settings, so vault files stay editable from
+      # the host on both macOS (501/20) and Linux (usually 1000/1000).
+      - PUID=${PUID:-501}
+      - PGID=${PGID:-20}
+      - TZ=${TZ:-America/Mexico_City}
     volumes:
-      - ./obsidian/config:/config # Stores Obsidian configurations and your vaults
+      # Obsidian configuration and your vaults.
+      - ./obsidian/config:/config
     ports:
-      - 3000:3000 # HTTP Web GUI port
-      - 3001:3001 # HTTPS Web GUI port
-    shm_size: "1gb" # Prevents browser crashes by allocating shared memory
+      - 3000:3000 # HTTP web GUI
+      - 3001:3001 # HTTPS web GUI
+    # Prevents Chromium from crashing on a tiny default /dev/shm.
+    shm_size: 1gb
     restart: unless-stopped

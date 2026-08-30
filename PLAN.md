@@ -1,25 +1,39 @@
 # Home Lab Plan & Context
 
-Self-hosted Docker home lab running on a **Mac mini**. Each service is an independent
-`docker compose` stack. Timezone everywhere: `America/Mexico_City`.
+Self-hosted Docker home lab. Each service is an independent `docker compose` stack.
+**Runs on macOS and on Linux** from the same files — host-specific values live in `.env`, never in
+the compose files. Timezone default: `America/Mexico_City`.
 
-> Companion docs: **[SETUP.md](./SETUP.md)** (step-by-step bring-up for humans),
+> Companion docs: **[SETUP.md](./SETUP.md)** (step-by-step bring-up),
+> **[DOCKER-INSTALL.md](./DOCKER-INSTALL.md)** (installing Docker on either OS),
 > **[REQUIREMENTS.md](./REQUIREMENTS.md)** (hardware sizing),
-> `README.md`, `restart-all.sh` (bulk pull + recreate), `test-services.sh` (health checks).
+> `README.md`, `configure.sh` (host config), `restart-all.sh` (bulk pull + recreate),
+> `test-services.sh` (health checks).
 
-## Placeholders
+## Configuration model
 
-The committed compose files are **templates**. Two placeholders appear verbatim inside them
-and must be substituted with your real values before `docker compose` will run:
+There are no placeholders to substitute. Every host-specific value is a **compose variable** read
+from the `.env` file sitting next to each `docker-compose.yml`:
 
-| Placeholder          | Meaning                                 | Example value   | Path prefix it completes        |
-| -------------------- | --------------------------------------- | --------------- | ------------------------------- |
-| `<ROOT_USERNAME>`    | Your macOS account (`whoami`)           | `feliperamirez` | `/Users/<ROOT_USERNAME>/…`      |
-| `<EXTERNAL_STORAGE>` | Your mounted external / NAS volume name | `NAS`           | `/Volumes/<EXTERNAL_STORAGE>/…` |
+| Variable           | Meaning                                                   | 🍎 macOS example                | 🐧 Linux example |
+| ------------------ | --------------------------------------------------------- | ------------------------------- | ---------------- |
+| `MEDIA_ROOT`       | Parent of `Audio/ Videos/ Images/ Documents/`, local disk | `/Users/felipe`                 | `/home/felipe`   |
+| `EXTERNAL_STORAGE` | Mount point of the NAS / external disk, **full path**     | `/Volumes/NAS`                  | `/mnt/nas`       |
+| `PUID` / `PGID`    | Host uid/gid the containers write as                      | `501` / `20`                    | `1000` / `1000`  |
+| `TZ`               | Timezone for every container                              | `America/Mexico_City`           | same             |
+| `COOLIFY_STORAGE`  | Where all Coolify state lives (coolify only)              | `/Volumes/NAS/Storage/coolify`  | `/data/coolify`  |
+| `SERVICE_HOST`     | Address `test-services.sh` probes (root `.env` only)      | `127.0.0.1` or the Tailscale IP | same             |
 
-Docker Compose does **not** expand `<...>` — it is not shell or `${VAR}` syntax. A stack started
-without substitution will create a directory literally named `<ROOT_USERNAME>` instead of mounting
-your data. See [SETUP.md](./SETUP.md#step-2--substitute-the-placeholders) for the substitution step.
+The **root `.env` is the source of truth.** `./configure.sh` detects the OS, fills in defaults, and
+fans those values out into each service's `.env`, generating any missing secret along the way. Run
+it again after moving your storage.
+
+Path variables are declared as `${VAR:?message}`, so a missing value **fails the command with an
+explanation** rather than silently mounting an empty directory:
+
+```text
+required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run ./configure.sh
+```
 
 ## Overview
 
@@ -34,138 +48,172 @@ your data. See [SETUP.md](./SETUP.md#step-2--substitute-the-placeholders) for th
 | Obsidian       | `obsidian-brain/` | 3000 / 3001      | `lscr.io/linuxserver/obsidian`                 | Obsidian vault (web GUI, Chromium)      |
 | Coolify        | `coolify/`        | 8000, 6001, 6002 | `coollabsio/coolify`                           | Self-hosted PaaS (4 containers)         |
 
+**14 containers** across 8 stacks.
+
 ## Service Details
 
-- **audiobookshelf/** — Port 13378 (`13378:80`). No PUID/PGID (the image doesn't use them).
-  Config/metadata in `./config` and `./metadata`.
-- **papra-doc/** — Port 1221. Runs as `user: "${UID}:${GID}"`, so `UID`/`GID` must come from its
-  `.env`. Needs `AUTH_SECRET` from the same file.
-- **home-assistant/** — Port 8123. `privileged: true` plus `NET_ADMIN` + `NET_RAW`. Mounts
-  `./run/dbus` read-only and `./config`. Host networking is *not* used — discovery protocols that
-  need L2 broadcast may not work.
-- **jellyfin/** — Port 8096 (8920 HTTPS is commented out). `PUID=501` / `PGID=20` (the standard
-  macOS first-user / `staff` pair). Config in `./config`, transcode cache in `./cache`.
-- **immich-photos/** — 4 containers on port 2283: `immich_server`, `immich_ml`,
-  `immich_redis` (valkey 9), `immich_db` (Immich's pinned pgvector postgres 14 image).
-  **DB data and ML cache are repo-local** (`./db-data`, `./ml-cache`), not on the NAS.
-- **portainer/** — Port 9000, mounts the Docker socket, data in the named volume
-  `portainer_data`. Alternate `compose-with-tsdproxy.yaml` adds `tsdproxy.*` labels for a
-  Tailscale proxy sidecar (the sidecar itself is not in this repo).
+- **audiobookshelf/** — Port 13378 (`13378:80`). The image ignores `PUID`/`PGID`, so it takes a
+  plain `user: "${PUID}:${PGID}"` directive instead. Config/metadata in `./config`, `./metadata`.
+- **papra-doc/** — Port 1221. Runs as `user: "${PUID}:${PGID}"`. Needs `AUTH_SECRET` from its
+  `.env`. Its data folder is `${EXTERNAL_STORAGE}/Documents`.
+- **home-assistant/** — Port 8123. `privileged: true` plus `NET_ADMIN` + `NET_RAW`.
+  🐧 On Linux, uncomment `network_mode: host` for working mDNS/SSDP discovery, and the `devices:`
+  block for a Zigbee/Z-Wave dongle. 🍎 On macOS neither helps — the Docker VM is NAT'd off the LAN.
+- **jellyfin/** — Port 8096 (8920 HTTPS commented out). Config in `./config`, transcode cache in
+  `./cache`. 🐧 Linux can pass `/dev/dri` through for VAAPI/QSV hardware transcoding (commented
+  block + `RENDER_GID` in its `.env`), or an NVIDIA GPU via the `deploy:` block. 🍎 macOS is
+  CPU-only, always.
+- **immich-photos/** — 4 containers on port 2283: `immich_server`, `immich_ml`, `immich_redis`
+  (valkey 9), `immich_db` (Immich's pinned pgvector Postgres 14 image — do not swap it for stock
+  postgres). **DB data and ML cache are repo-local** (`./db-data`, `./ml-cache`), deliberately: a
+  network round-trip would make Postgres crawl. 🐧 Linux with an NVIDIA GPU can use the `-cuda` ML
+  image tag.
+- **portainer/** — Port 9000, mounts the Docker socket, data in the named volume `portainer_data`.
+  🐧 On Linux your user must be in the `docker` group for that mount to be usable. Alternate
+  `compose-with-tsdproxy.yaml` adds `tsdproxy.*` labels for a Tailscale proxy sidecar (the sidecar
+  itself is not in this repo).
 - **obsidian-brain/** — LinuxServer Obsidian on 3000 (HTTP GUI) / 3001 (HTTPS). Chromium-based, so
-  `seccomp:unconfined` and `shm_size: 1gb`. Config & vaults in `./obsidian/config`.
-- **coolify/** — 4 containers: `coolify` UI (`${APP_PORT:-8000}` → 8080), `coolify-db` (postgres 15),
-  `coolify-redis` (redis 7), `coolify-realtime` (soketi, 6001/6002). All on a dedicated `coolify`
-  bridge network. The UI has `depends_on: service_healthy` for all three, so it will not start until
-  they pass their healthchecks. **Its persistent storage is the only NAS-backed storage in the lab.**
+  `seccomp:unconfined` and `shm_size: 1gb`. Config & vaults in `./obsidian/config`. Runs as the
+  shared `PUID`/`PGID`, so the vault stays editable from the host on both OSes.
+- **coolify/** — 4 containers: `coolify` UI (`${APP_PORT:-8000}` → 8080), `coolify-db` (Postgres
+  15), `coolify-redis` (Redis 7), `coolify-realtime` (soketi, 6001/6002), all on a dedicated
+  `coolify` bridge network. The UI has `depends_on: service_healthy` for all three, so it will not
+  start until they pass their healthchecks. All state lives under `COOLIFY_STORAGE`.
+  🐧 **Linux is where Coolify actually works** — uncomment the Docker socket mount and it can
+  deploy to the host. 🍎 On macOS it runs but cannot manage the Mac; it is a dashboard only.
 
 ## Storage Layout
 
-Everything under `./` is relative to the service directory inside this repo.
+`./` is relative to the service directory inside this repo.
 
-| Service        | Host path                                | Container path            | Mode |
-| -------------- | ---------------------------------------- | ------------------------- | ---- |
-| audiobookshelf | `./config`, `./metadata`                 | `/config`, `/metadata`    | rw   |
-| audiobookshelf | `/Users/<ROOT_USERNAME>/Audio`           | `/audiobooks`             | rw   |
-| audiobookshelf | `/Users/<ROOT_USERNAME>/Documents`       | `/books`                  | rw   |
-| audiobookshelf | `/Volumes/<EXTERNAL_STORAGE>/Audio`      | `/audiobooks-external`    | rw   |
-| audiobookshelf | `/Volumes/<EXTERNAL_STORAGE>/Documents`  | `/books-external`         | rw   |
-| jellyfin       | `./config`, `./cache`                    | `/config`, `/cache`       | rw   |
-| jellyfin       | `/Users/<ROOT_USERNAME>/Videos`          | `/data/videos`            | rw   |
-| jellyfin       | `/Volumes/<EXTERNAL_STORAGE>/Videos`     | `/data/videos-external`   | rw   |
-| immich         | `/Volumes/<EXTERNAL_STORAGE>/Images`     | `/mnt/external-data`      | rw   |
-| immich         | `/Users/<ROOT_USERNAME>/Images`          | `/mnt/external-library`   | **ro** |
-| immich         | `./db-data`, `./ml-cache`                | postgres data, `/cache`   | rw   |
-| papra          | `./`                                     | `/app/app-data`           | rw   |
-| papra          | `/Volumes/<EXTERNAL_STORAGE>/Documents`  | `/app/app-data`           | rw   |
-| papra          | `/Users/<ROOT_USERNAME>/Documents`       | `/data/documents`         | rw   |
-| home-assistant | `./config`, `./run/dbus`                 | `/config`, `/run/dbus`    | rw / ro |
-| obsidian       | `./obsidian/config`                      | `/config`                 | rw   |
-| coolify        | `/Volumes/<EXTERNAL_STORAGE>/Storage/coolify/{ssh,applications,databases,services,backups,postgres,redis}` | various under `/var/www/html/storage/app` | rw |
-| portainer      | `/var/run/docker.sock`, `portainer_data` | socket, `/data`           | rw   |
+| Service        | Host path                                                                         | Container path                            | Mode    |
+| -------------- | --------------------------------------------------------------------------------- | ----------------------------------------- | ------- |
+| audiobookshelf | `./config`, `./metadata`                                                          | `/config`, `/metadata`                    | rw      |
+| audiobookshelf | `${MEDIA_ROOT}/Audio`                                                             | `/audiobooks`                             | rw      |
+| audiobookshelf | `${MEDIA_ROOT}/Documents`                                                         | `/books`                                  | rw      |
+| audiobookshelf | `${EXTERNAL_STORAGE}/Audio`                                                       | `/audiobooks-external`                    | rw      |
+| audiobookshelf | `${EXTERNAL_STORAGE}/Documents`                                                   | `/books-external`                         | rw      |
+| jellyfin       | `./config`, `./cache`                                                             | `/config`, `/cache`                       | rw      |
+| jellyfin       | `${MEDIA_ROOT}/Videos`                                                            | `/data/videos`                            | rw      |
+| jellyfin       | `${EXTERNAL_STORAGE}/Videos`                                                      | `/data/videos-external`                   | rw      |
+| immich         | `${EXTERNAL_STORAGE}/Images`                                                      | `/mnt/external-data`                      | rw      |
+| immich         | `${MEDIA_ROOT}/Images`                                                            | `/mnt/external-library`                   | **ro**  |
+| immich         | `./db-data`, `./ml-cache`                                                         | postgres data, `/cache`                   | rw      |
+| papra          | `${EXTERNAL_STORAGE}/Documents`                                                   | `/app/app-data`                           | rw      |
+| papra          | `${MEDIA_ROOT}/Documents`                                                         | `/data/documents`                         | rw      |
+| home-assistant | `./config`, `./run/dbus`                                                          | `/config`, `/run/dbus`                    | rw / ro |
+| obsidian       | `./obsidian/config`                                                               | `/config`                                 | rw      |
+| coolify        | `${COOLIFY_STORAGE}/{ssh,applications,databases,services,backups,postgres,redis}` | various under `/var/www/html/storage/app` | rw      |
+| portainer      | `/var/run/docker.sock`, `portainer_data`                                          | socket, `/data`                           | rw      |
 
-**Summary:** local media lives under `/Users/<ROOT_USERNAME>/{Audio,Videos,Images,Documents}`;
-the NAS mirrors `Audio`, `Videos`, `Images`, `Documents` and additionally holds all Coolify state
-under `/Volumes/<EXTERNAL_STORAGE>/Storage/coolify/`. Immich's database is *not* on the NAS.
+**Summary:** local media lives under `${MEDIA_ROOT}/{Audio,Videos,Images,Documents}`; the external
+volume mirrors those four and additionally holds all Coolify state under `${COOLIFY_STORAGE}`.
+Immich's database is _not_ on the external volume.
+
+🐧 On Linux, `${COOLIFY_STORAGE}` is best pointed at a **local** disk (e.g. `/data/coolify`) rather
+than the NAS — Postgres over NFS/SMB is slow and prone to corruption.
 
 ## Environment & Secrets
 
-Secrets are kept out of the compose files and live in per-service `.env` files (git-ignored).
-Each such service ships a committed `.env.example` template with the same keys but **no** real
-values — copy it to `.env` and fill it in before starting the stack.
+Every service reads the `.env` next to its compose file, and every service ships a committed
+`.env.example` with the same keys and **no** real values. `./configure.sh` creates all of them.
 
-| Service          | `.env` keys                                                                                                    | Notes                                           |
-| ---------------- | -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `papra-doc/`     | `AUTH_SECRET`, `UID`, `GID`                                                                                    | `AUTH_SECRET` moved out of `docker-compose.yml` |
-| `immich-photos/` | `IMMICH_VERSION`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE_NAME`                                             | Compose loads it via `env_file:`                |
-| `coolify/`       | `APP_*`, `DB_*`, `REDIS_PASSWORD`, `PUSHER_APP_*`, `SOKETI_*`, `REGISTRY_URL`, `LATEST_IMAGE`                  | Compose loads it via `env_file:`                |
+| Service           | Keys it declares                                                                                                 | Notes                                           |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| _(root)_ `.env`   | `TZ`, `PUID`, `PGID`, `MEDIA_ROOT`, `EXTERNAL_STORAGE`, `SERVICE_HOST`                                           | Source of truth; `configure.sh` fans it out     |
+| `audiobookshelf/` | `TZ`, `PUID`, `PGID`, `MEDIA_ROOT`, `EXTERNAL_STORAGE`                                                           | No secrets                                      |
+| `jellyfin/`       | `TZ`, `PUID`, `PGID`, `MEDIA_ROOT`, `EXTERNAL_STORAGE`, _(opt)_ `RENDER_GID`                                     | No secrets; `RENDER_GID` is Linux-only          |
+| `home-assistant/` | `TZ`                                                                                                             | No secrets — HA keeps its own inside `./config` |
+| `obsidian-brain/` | `TZ`, `PUID`, `PGID`                                                                                             | No secrets                                      |
+| `portainer/`      | `TZ`                                                                                                             | No secrets — admin account lives in the volume  |
+| `papra-doc/`      | `AUTH_SECRET`, `TZ`, `PUID`, `PGID`, `MEDIA_ROOT`, `EXTERNAL_STORAGE`                                            | Also loaded into the container via `env_file:`  |
+| `immich-photos/`  | `IMMICH_VERSION`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE_NAME`, `TZ`, `MEDIA_ROOT`, `EXTERNAL_STORAGE`       | Loaded via `env_file:`                          |
+| `coolify/`        | `APP_*`, `DB_*`, `REDIS_PASSWORD`, `PUSHER_APP_*`, `SOKETI_*`, `COOLIFY_STORAGE`, `REGISTRY_URL`, `LATEST_IMAGE` | Loaded via `env_file:`                          |
 
-The other services (`audiobookshelf/`, `jellyfin/`, `home-assistant/`, `obsidian-brain/`,
-`portainer/`) contain no secrets — only non-sensitive inline config (`TZ`, `PUID`/`PGID`) — so
-they have no `.env` file.
+**Set up everything at once:**
 
-**Set up a service's env from its template:**
+```bash
+cp .env.example .env && $EDITOR .env && ./configure.sh
+```
+
+**Or one service by hand:**
 
 ```bash
 cp <service-dir>/.env.example <service-dir>/.env
-# then edit <service-dir>/.env and fill in the secrets
+$EDITOR <service-dir>/.env
 ```
 
-Generate strong values with `openssl rand -hex 32` (or `-hex 24` / `-base64 32` as noted in each template).
+Generate strong values with `openssl rand -hex 32` (or `-hex 24` / `-base64 32` as noted in each
+template) — `configure.sh` does this for you and never overwrites a value you already set.
 
-The root `.gitignore` ignores every real `.env` / `.env.*` but keeps `.env.example` (and `*.example`)
-tracked, and excludes the runtime data directories the bind mounts create.
+The root `.gitignore` ignores every real `.env` / `.env.*` but keeps `.env.example` (and
+`*.example`) tracked, and excludes the runtime data directories the bind mounts create.
 
 ## Network / Tailscale
 
-The Mac mini is reachable over Tailscale:
+The host is reachable over Tailscale from any device on the tailnet:
 
-|                       | Value                                |
-| --------------------- | ------------------------------------ |
-| **MagicDNS hostname** | `<YOUR TAILSCALE ADDRESS>.ts.net` |
-| **Tailscale IP**      | `100.105.40.95`                      |
+```text
+http://<machine>.<tailnet>.ts.net:<port>
+```
 
-All services are accessible remotely via `http://<YOUR TAILSCALE ADDRESS>.ts.net:<port>`
-(or `http://100.105.40.95:<port>`). `test-services.sh` probes every service over the Tailscale IP.
+`test-services.sh` probes `SERVICE_HOST` from the root `.env` (default `127.0.0.1`). Set it to your
+Tailscale IP or MagicDNS name to test remote reachability instead of just local binding.
+
+🐧 **Linux firewalls.** macOS ships with its firewall off by default; most Linux distros do not.
+Allow the tailnet interface rather than opening ports to the world:
+
+```bash
+sudo ufw allow in on tailscale0                                    # Debian/Ubuntu
+sudo firewall-cmd --permanent --zone=trusted --add-interface=tailscale0 && sudo firewall-cmd --reload   # Fedora/RHEL
+```
 
 Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` that adds
 `tsdproxy.enable` / `tsdproxy.ephemeral` labels for a Tailscale proxy sidecar.
 
 ### Port map
 
-| Port  | Service                     |
-| ----- | --------------------------- |
-| 1221  | Papra                       |
-| 2283  | Immich                      |
-| 3000  | Obsidian (HTTP GUI)         |
-| 3001  | Obsidian (HTTPS GUI)        |
-| 6001  | Coolify realtime (soketi)   |
-| 6002  | Coolify realtime (metrics)  |
-| 8000  | Coolify UI                  |
-| 8096  | Jellyfin                    |
-| 8123  | Home Assistant              |
-| 9000  | Portainer                   |
-| 13378 | Audiobookshelf              |
+| Port  | Service                    |
+| ----- | -------------------------- |
+| 1221  | Papra                      |
+| 2283  | Immich                     |
+| 3000  | Obsidian (HTTP GUI)        |
+| 3001  | Obsidian (HTTPS GUI)       |
+| 6001  | Coolify realtime (soketi)  |
+| 6002  | Coolify realtime (metrics) |
+| 8000  | Coolify UI                 |
+| 8096  | Jellyfin                   |
+| 8123  | Home Assistant             |
+| 9000  | Portainer                  |
+| 13378 | Audiobookshelf             |
 
 ## Common Tasks
 
-**Restart all services** (pull latest images + recreate containers, then run health checks):
+**Configure or re-configure the host** (after a fresh clone, or after moving storage):
 
 ```bash
-./restart-all.sh
+./configure.sh              # add --dry-run to see what it would change
+```
+
+**Restart all services** (pull latest images + recreate containers, then health checks):
+
+```bash
+./restart-all.sh            # --no-pull to skip pulling, --no-test to skip the health check
 ```
 
 It iterates `audiobookshelf → coolify → papra-doc → home-assistant → jellyfin → immich-photos →
-portainer → obsidian-brain`, skips any directory with no compose file, and finishes by invoking
-`test-services.sh`.
+portainer → obsidian-brain`, skips any directory with no compose file or no `.env`, finishes by
+invoking `test-services.sh`, and exits non-zero if any stack failed.
 
 **Health-check only:**
 
 ```bash
 ./test-services.sh
+SERVICE_HOST=100.105.40.95 ./test-services.sh    # check over Tailscale instead of localhost
 ```
 
-Prints `docker ps`, curls each service over the Tailscale IP, then reports Tailscale peer
-connectivity and whether peers are DIRECT or on a DERP relay.
+Prints `docker ps`, curls each service, then reports Tailscale peer connectivity and whether peers
+are DIRECT or on a DERP relay. Skips the Tailscale section cleanly if it is not installed.
 
 **Restart a single service:**
 
@@ -180,62 +228,70 @@ docker compose -f <service-dir>/docker-compose.yml up -d --remove-orphans
 
 ## Operating Notes / Gotchas
 
-- **Placeholders are literal.** `<ROOT_USERNAME>` / `<EXTERNAL_STORAGE>` must be substituted before
-  any stack starts, or Docker silently bind-mounts freshly created directories with those literal
-  names. See [SETUP.md](./SETUP.md).
-- **The NAS must be mounted first.** `/Volumes/<EXTERNAL_STORAGE>` is a bind-mount source for
-  audiobookshelf, jellyfin, immich, papra, and all of coolify. If the volume is not mounted, Docker
-  creates an empty directory under `/Volumes/` and the containers start against empty storage —
-  worst for Coolify, whose postgres would initialize a brand-new empty database.
-- **`papra-doc` mounts two host paths onto the same container path** (`./` and
-  `/Volumes/<EXTERNAL_STORAGE>/Documents` both → `/app/app-data`). The later mount wins, so the
-  repo-relative one is dead weight. Drop one of the two when you next touch that file.
-- **`obsidian-brain` uses `PUID=1000` / `PGID=1000`**, while the rest of the lab uses the macOS
-  pair `501` / `20`. Files it writes to `./obsidian/config` will be owned by a UID that doesn't
-  exist on the host; align it to `501`/`20` if you need to edit the vault from macOS.
+- **The external volume must be mounted first.** `${EXTERNAL_STORAGE}` is a bind-mount source for
+  audiobookshelf, jellyfin, immich, papra, and all of Coolify. If it is not mounted, Docker creates
+  an empty directory there and the containers start against empty storage — worst for Coolify,
+  whose Postgres would initialise a brand-new empty database. `configure.sh` checks and warns;
+  🍎 verify with `mount | grep`, 🐧 with `mountpoint`.
+- **`configure.sh` is idempotent and non-destructive.** It never overwrites a secret that already
+  has a value. Re-run it whenever the root `.env` changes.
+- **`PUID`/`PGID` differ by OS** — macOS's first user is `501:20` (`staff`), Linux's is usually
+  `1000:1000`. They come from `id -u` / `id -g` via `configure.sh`. Get them wrong and every file
+  the containers write is owned by a user that does not exist on the host.
+- 🐧 **Linux firewall and the `docker` group** are the two things macOS does not make you think
+  about. `sudo usermod -aG docker $USER` and allow `tailscale0`.
+- 🐧 **`sudo systemctl enable docker`** — `restart: unless-stopped` is meaningless if the daemon
+  never starts at boot.
 - `immich-photos` upgrades may require **DB migrations** — watch `immich_db` logs after a pull.
   Pin `IMMICH_VERSION` in its `.env` if you want to control when that happens.
-- `coolify`'s UI waits on postgres/redis/soketi healthchecks; a slow NAS makes first start take a
+- `coolify`'s UI waits on Postgres/Redis/soketi healthchecks; slow storage makes first start take a
   while. Check `docker compose -f coolify/docker-compose.yml ps` before assuming it failed.
 - `home-assistant` runs privileged with `NET_ADMIN`/`NET_RAW` — treat its config directory as
   security-sensitive.
 - `restart-all.sh` is the source of truth for which services exist and in what order they restart;
   the tables in `README.md` and here are copies of it and can drift.
-- When helping with any service, **check its `docker-compose.yml` first**; use `restart-all.sh`
-  for bulk updates.
+- When helping with any service, **check its `docker-compose.yml` and `.env.example` first**; use
+  `restart-all.sh` for bulk updates.
 
 ## Rationale
 
 Home automation, media streaming, photo management, document archiving, and an app platform — all
-self-hosted on the Mac mini, with local media on the internal disk and bulk/Coolify storage on the NAS.
+self-hosted, with local media on the internal disk and bulk/Coolify storage on the external volume.
+The lab started on a Mac mini; it now runs unchanged on a Linux server, which is the better host
+for it (GPU transcoding, real device discovery, a working Coolify). See
+[REQUIREMENTS.md § Platform differences](./REQUIREMENTS.md#platform-differences).
 
 ---
 
 ## Troubleshooting: Services Not Reachable from Tailscale Peers
 
-**Investigated 2026-06-29.** All services are correctly configured on the Mac mini side — ports bound to `0.0.0.0`, macOS Application Firewall disabled, Tailscale UDP 41641 listening. Services respond correctly when accessed via `100.105.40.95` locally.
+**Investigated 2026-06-29 on the Mac mini.** All services were correctly configured host-side —
+ports bound to `0.0.0.0`, the macOS Application Firewall disabled, Tailscale UDP 41641 listening.
+Services responded correctly when accessed via the Tailscale IP locally.
 
-### Root Cause: No Direct P2P — MacBook Uses DERP Relay
+### Root Cause: No Direct P2P — the peer used a DERP relay
 
 ```text
 Peer: MacBook Pro | relay=den | direct=(none) | active=True
 Peer: iPhone      | relay=dfw | direct=(none) | active=False
 ```
 
-UDP hole-punching fails between the Mac mini and remote peers, so all traffic routes through Tailscale's relay (DERP) servers. DERP connections are slower and can be flaky for persistent TCP sessions to self-hosted services.
+UDP hole-punching failed between the host and remote peers, so all traffic routed through
+Tailscale's relay (DERP) servers. DERP connections are slower and can be flaky for persistent TCP
+sessions to self-hosted services.
 
 ### Fix: Forward UDP 41641 on the Home Router
 
 Add a port forwarding rule in your router admin panel:
 
-| Field         | Value                                          |
-| ------------- | ---------------------------------------------- |
-| Protocol      | UDP                                            |
-| External port | 41641                                          |
-| Internal IP   | Mac mini LAN IP (run `ipconfig getifaddr en1`) |
-| Internal port | 41641                                          |
+| Field         | Value                                                              |
+| ------------- | ------------------------------------------------------------------ |
+| Protocol      | UDP                                                                |
+| External port | 41641                                                              |
+| Internal IP   | The host's LAN IP — 🍎 `ipconfig getifaddr en1` · 🐧 `hostname -I` |
+| Internal port | 41641                                                              |
 
-This allows Tailscale to establish direct P2P connections instead of going through DERP.
+This lets Tailscale establish direct P2P connections instead of going through DERP.
 
 ### Verify After Fix
 
@@ -248,7 +304,8 @@ tailscale status
 
 ### Other Things Already Ruled Out
 
-- macOS Application Firewall: **disabled** — not blocking anything
-- Docker port bindings: all `0.0.0.0` — Tailscale interface included
+- Host firewall: **disabled** on the Mac — not blocking anything.
+  🐧 On Linux this is the _first_ thing to check, not the last: `sudo ufw status`.
+- Docker port bindings: all `0.0.0.0` — the Tailscale interface included
 - Tailscale daemon: running, UDP 41641 listening on both IPv4 and IPv6
-- Services: all healthy and responding via Tailscale IP from localhost
+- Services: all healthy and responding via the Tailscale IP from localhost
