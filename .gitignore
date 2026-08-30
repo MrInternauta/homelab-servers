@@ -1,0 +1,31 @@
+# ── Secrets ────────────────────────────────────────────────────────────
+# Every real .env is ignored; the committed *.example templates are not.
+.env
+.env.*
+!.env.example
+!*.example
+
+# ── Runtime data created by the compose bind mounts ────────────────────
+audiobookshelf/config/
+audiobookshelf/metadata/
+jellyfin/config/
+jellyfin/cache/
+home-assistant/config/
+home-assistant/run/
+obsidian-brain/obsidian/
+immich-photos/db-data/
+immich-photos/ml-cache/
+papra-doc/app-data/
+papra-doc/db/
+
+# ── macOS ──────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Editors ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo

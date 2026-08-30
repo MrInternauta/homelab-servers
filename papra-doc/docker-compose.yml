@@ -1,0 +1,17 @@
+services:
+  papra:
+    container_name: papra
+    image: ghcr.io/papra-hq/papra:latest
+    restart: unless-stopped
+    ports:
+      - "1221:1221"
+    env_file:
+      - .env
+    environment:
+      - AUTH_SECRET=${AUTH_SECRET}
+      - PAPRA_DATA_FOLDER=/app/app-data
+    volumes:
+      - ./:/app/app-data
+      - /Volumes/<EXTERNAL_STORAGE>/Documents:/app/app-data
+      - /Users/<ROOT_USERNAME>/Documents:/data/documents
+    user: "${UID}:${GID}"

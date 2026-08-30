@@ -1,0 +1,16 @@
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    privileged: true
+    environment:
+      - TZ=America/Mexico_City
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./run/dbus:/run/dbus:ro
+      - ./config:/config

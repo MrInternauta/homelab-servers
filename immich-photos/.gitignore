@@ -1,0 +1,24 @@
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Data directories
+immich-data/
+postgres_data/
+model_cache/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Docker
+.dockerignore

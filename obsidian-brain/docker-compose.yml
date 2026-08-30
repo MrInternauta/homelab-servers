@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  obsidian:
+    image: lscr.io/linuxserver/obsidian:latest
+    container_name: obsidian
+    security_opt:
+      - seccomp:unconfined # Necessary for Chromium-based apps inside Docker
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/Mexico_City # Change to your timezone, e.g., America/New_York
+    volumes:
+      - ./obsidian/config:/config # Stores Obsidian configurations and your vaults
+    ports:
+      - 3000:3000 # HTTP Web GUI port
+      - 3001:3001 # HTTPS Web GUI port
+    shm_size: "1gb" # Prevents browser crashes by allocating shared memory
+    restart: unless-stopped
