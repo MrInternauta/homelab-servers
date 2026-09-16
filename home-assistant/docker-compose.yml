@@ -1,16 +1,37 @@
+# Home Assistant — home automation. http://localhost:8123
+#
+# On macOS the Docker VM is NAT'd, so L2 discovery (mDNS, HomeKit, ESPHome)
+# does not reach your LAN no matter what capabilities the container has.
+# On Linux you can switch to host networking and get full discovery — see the
+# block at the bottom of this file.
 services:
   homeassistant:
     container_name: homeassistant
     image: ghcr.io/home-assistant/home-assistant:stable
     restart: unless-stopped
-    ports:
-      - "8123:8123"
-    privileged: true
     environment:
-      - TZ=America/Mexico_City
+      - TZ=${TZ:-America/Mexico_City}
+    ports:
+      - 8123:8123
+    privileged: true
     cap_add:
       - NET_ADMIN
       - NET_RAW
     volumes:
-      - ./run/dbus:/run/dbus:ro
       - ./config:/config
+      - ./run/dbus:/run/dbus:ro
+      # Linux: the host's own D-Bus, for Bluetooth and systemd integrations.
+      # Swap the line above for this one on a Linux host that has it:
+      # - /run/dbus:/run/dbus:ro
+
+    # ── Linux only: host networking ──────────────────────────────────────────
+    # Recommended on Linux — it is what upstream documents. It gives Home
+    # Assistant real LAN access so mDNS/SSDP discovery works. It also makes the
+    # `ports` block above irrelevant (HA still answers on 8123).
+    # Uncomment BOTH lines and comment out the `ports` block above:
+    # network_mode: host
+    #
+    # ── Linux only: USB radios (Zigbee/Z-Wave dongles) ──────────────────────
+    # Find yours with `ls -l /dev/serial/by-id/` and pass it through:
+    # devices:
+    #   - /dev/serial/by-id/usb-YOUR-DONGLE:/dev/ttyUSB0

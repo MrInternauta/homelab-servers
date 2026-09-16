@@ -1,204 +1,275 @@
-# Setup Guide — Mounting the Whole Home Lab
+# Setup Guide — Bringing the Whole Home Lab Up
 
-A start-to-finish walkthrough for bringing every service in this repo online on a fresh Mac mini.
-Follow the steps in order; each one ends with a check you can run before moving on.
+A start-to-finish walkthrough for a fresh machine. **Works on macOS and on Linux** — every step
+marks where the two differ with a 🍎 / 🐧 badge. Steps without a badge are identical on both.
 
 For _what_ each service is and where its data lives, see **[PLAN.md](./PLAN.md)**.
+For installing Docker itself, see **[DOCKER-INSTALL.md](./DOCKER-INSTALL.md)**.
 
 **Time:** ~30–45 minutes, most of it image pulls.
 
 ---
 
+## The short version
+
+If you already know what you are doing:
+
+```bash
+git clone <this-repo> homelab-servers && cd homelab-servers
+cp .env.example .env
+$EDITOR .env                 # set MEDIA_ROOT and EXTERNAL_STORAGE for your OS
+./configure.sh               # fans those out to every service, generates secrets, makes dirs
+./restart-all.sh             # pull + start everything, then health-check
+```
+
+The rest of this document explains each of those, and what to check in between.
+
+---
+
 ## Before you start
 
-You will substitute two values everywhere in this guide. Write them down now:
+Two host paths drive the whole lab. Write yours down now:
 
-| Placeholder          | How to find it                               | Yours |
-| -------------------- | -------------------------------------------- | ----- |
-| `<ROOT_USERNAME>`    | `whoami`                                     |       |
-| `<EXTERNAL_STORAGE>` | `ls /Volumes` — the NAS / external disk name |       |
+| Variable           | What it is                                                          | 🍎 macOS                | 🐧 Linux                      |
+| ------------------ | ------------------------------------------------------------------- | ----------------------- | ----------------------------- |
+| `MEDIA_ROOT`       | Parent of `Audio/ Videos/ Images/ Documents/`, on the internal disk | `/Users/<you>`          | `/home/<you>` or `/srv/media` |
+| `EXTERNAL_STORAGE` | Mount point of your NAS / external disk, **full path**              | `/Volumes/<VolumeName>` | `/mnt/<name>` or `/srv/nas`   |
+
+Plus your user and group id — `configure.sh` reads these automatically, but it helps to know them:
+
+```bash
+id -u    # macOS: usually 501     Linux: usually 1000
+id -g    # macOS: usually 20 (staff)   Linux: usually 1000
+```
+
+> **Upgrading from the old layout?** This repo used to ship compose files containing the literal
+> text `<ROOT_USERNAME>` and `<EXTERNAL_STORAGE>` that you had to `sed` into place. That is gone.
+> The compose files now use real `${VARIABLE}` interpolation fed from per-service `.env` files,
+> so nothing needs editing and nothing shows up as modified in `git status`. See
+> [Migrating from the placeholder layout](#migrating-from-the-placeholder-layout) at the end.
 
 ---
 
 ## Step 1 — Prerequisites
 
-```bash
-# Docker Desktop must be installed and RUNNING (whale icon in the menu bar).
-docker --version          # any recent version
-docker compose version    # must exist — this repo uses the compose *plugin*, not docker-compose
-docker ps                 # must succeed; if it errors, Docker Desktop isn't running
+Install Docker Engine + the `docker compose` v2 plugin first:
+**[DOCKER-INSTALL.md](./DOCKER-INSTALL.md)**.
 
-# Tailscale, for remote access
-tailscale status
+```bash
+docker --version
+docker compose version    # must print v2.x — this repo uses the plugin, not docker-compose v1
+docker info               # must succeed
 ```
 
-Then make the scripts executable:
+🍎 **macOS:** `docker info` failing almost always means Docker Desktop (or Colima) is not running.
+Also make sure **Settings → Resources → File sharing** lists your home directory and `/Volumes`,
+or every bind mount in this repo will fail.
+
+🐧 **Linux:** if `docker info` says _permission denied_, you are not in the `docker` group yet:
+
+```bash
+sudo usermod -aG docker "$USER" && newgrp docker
+sudo systemctl enable --now docker      # also makes containers survive a reboot
+```
+
+Then clone the repo and make the scripts executable:
 
 ```bash
 cd ~/Documents/projects/homelab-servers   # or wherever you cloned this
-chmod +x restart-all.sh test-services.sh
+chmod +x configure.sh restart-all.sh test-services.sh
 ```
 
 **Check:** `docker ps` prints a header row without error.
 
 ---
 
-## Step 2 — Substitute the placeholders
+## Step 2 — Mount the external storage
 
-> **This is the step people skip, and skipping it breaks everything.**
-> The compose files contain the literal text `<ROOT_USERNAME>` and `<EXTERNAL_STORAGE>`.
-> Docker Compose does **not** expand `<...>` — it is not `${VAR}` syntax. If you start a stack
-> without substituting, Docker happily creates a directory literally named
-> `/Users/<ROOT_USERNAME>` and mounts that empty directory. Your containers come up looking
-> completely empty and you will spend an hour wondering why.
+`EXTERNAL_STORAGE` is a bind-mount source for audiobookshelf, jellyfin, immich, papra, and all of
+Coolify. **It must be mounted before any stack starts.**
 
-Set your two values and rewrite the compose files in place:
+> **Why this matters:** if the volume is missing, Docker does not fail — it _creates an empty
+> directory_ at that path and mounts that. Your libraries come up empty, and Coolify's Postgres
+> initialises a brand-new blank database over the top of where your real one should be. Never
+> start Coolify with the storage unmounted.
+
+### 🍎 macOS
+
+Mount it in Finder (⌘K for a network share), then:
 
 ```bash
-ROOT_USERNAME="$(whoami)"
-EXTERNAL_STORAGE="NAS"          # ← change to your actual volume name from `ls /Volumes`
-
-# macOS sed needs the empty-string argument after -i
-grep -rl '<ROOT_USERNAME>\|<EXTERNAL_STORAGE>' --include='*.yml' --include='*.yaml' . \
-  | xargs sed -i '' \
-      -e "s|<ROOT_USERNAME>|${ROOT_USERNAME}|g" \
-      -e "s|<EXTERNAL_STORAGE>|${EXTERNAL_STORAGE}|g"
+ls /Volumes                      # your volume name appears here
+mount | grep -i "<VolumeName>"   # confirms it is a real mount, not a stub directory
 ```
 
-**Check:** this must print nothing.
+Add it to **System Settings → General → Login Items** so it remounts at boot.
+
+### 🐧 Linux
+
+Mount it yourself and make it permanent in `/etc/fstab` so a reboot does not silently detach your
+storage:
 
 ```bash
-grep -rn '<ROOT_USERNAME>\|<EXTERNAL_STORAGE>' --include='*.yml' --include='*.yaml' .
+sudo mkdir -p /mnt/nas
+
+# Local disk — find the UUID first:
+lsblk -f
+echo 'UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx /mnt/nas ext4 defaults,nofail 0 2' \
+  | sudo tee -a /etc/fstab
+
+# NFS share:
+# echo 'nas.local:/volume1/media /mnt/nas nfs defaults,nofail,_netdev 0 0' | sudo tee -a /etc/fstab
+
+# SMB/CIFS share — put the credentials in a root-only file, never in fstab:
+# printf 'username=me\npassword=secret\n' | sudo tee /etc/samba/nas-creds >/dev/null
+# sudo chmod 600 /etc/samba/nas-creds
+# echo "//nas.local/media /mnt/nas cifs credentials=/etc/samba/nas-creds,uid=$(id -u),gid=$(id -g),nofail,_netdev 0 0" \
+#   | sudo tee -a /etc/fstab
+
+sudo systemctl daemon-reload
+sudo mount -a
 ```
 
-> **Don't commit the result.** `git status` will now show every compose file as modified. Those
-> edits are machine-local. Either leave them uncommitted, or hide them from git with:
->
-> ```bash
-> git update-index --skip-worktree $(git ls-files '*.yml' '*.yaml')
-> ```
->
-> (undo later with `--no-skip-worktree`).
+`nofail` keeps a missing disk from blocking boot; `_netdev` makes network mounts wait for the
+network. For CIFS, the `uid=`/`gid=` options matter — without them every file is owned by root and
+the containers cannot write.
 
----
-
-## Step 3 — Mount the external storage
-
-`/Volumes/<EXTERNAL_STORAGE>` is a bind-mount source for audiobookshelf, jellyfin, immich, papra,
-and **all** of Coolify. It must be mounted _before_ any stack starts.
+**Check (both):**
 
 ```bash
-ls "/Volumes/${EXTERNAL_STORAGE}"
-```
-
-If that fails, mount it in Finder (⌘K for a network share) and re-check. In Finder, set
-**System Settings → General → Login Items** to remount it at boot so a reboot doesn't silently
-detach your storage.
-
-> **Why this matters:** if the volume is missing, Docker creates an empty directory at that path
-> instead of failing. Coolify's postgres would then initialize a brand-new empty database, and you
-> lose your Coolify state. Never start Coolify with the NAS unmounted.
-
-**Check:**
-
-```bash
-ls "/Volumes/${EXTERNAL_STORAGE}"                    # your NAS contents
-mount | grep "${EXTERNAL_STORAGE}"                   # confirms it's a real mount, not a stub dir
+ls /mnt/nas                # or /Volumes/<VolumeName> — shows your content
+mountpoint /mnt/nas        # Linux: "is a mountpoint"
 ```
 
 ---
 
-## Step 4 — Create the host media directories
+## Step 3 — Configure the lab
 
-These are bind-mount sources on the internal disk. Docker would create them as `root`-owned if
-missing; create them yourself so they belong to you.
+One script does the whole thing. It detects your OS, fills in the defaults, creates every
+service's `.env`, generates every secret, and creates the host directories:
 
 ```bash
-mkdir -p ~/Audio ~/Videos ~/Images ~/Documents
-
-# NAS-side counterparts
-mkdir -p "/Volumes/${EXTERNAL_STORAGE}"/{Audio,Videos,Images,Documents}
-mkdir -p "/Volumes/${EXTERNAL_STORAGE}/Storage/coolify"/{ssh,applications,databases,services,backups,postgres,redis}
+cp .env.example .env
+$EDITOR .env          # set MEDIA_ROOT and EXTERNAL_STORAGE (it refuses to run on CHANGEME)
+./configure.sh
 ```
 
-Then grant Docker Desktop access to them: **Docker Desktop → Settings → Resources → File sharing**
-must include your home directory and `/Volumes`. Without this, bind mounts fail with a
-"path is not shared" error.
-
-**Check:** `ls -ld ~/Audio ~/Videos ~/Images ~/Documents` shows your user as owner.
-
----
-
-## Step 5 — Fill in the secrets
-
-Three services need a `.env`. Each ships an `.env.example` template with the right keys and no values.
+Prefer to look before it writes anything:
 
 ```bash
-cp papra-doc/.env.example      papra-doc/.env
-cp immich-photos/.env.example  immich-photos/.env
-cp coolify/.env.example        coolify/.env
+./configure.sh --dry-run
 ```
 
-Generate values with `openssl` and paste them in:
+What it does, in order:
+
+1. **Detects** macOS vs Linux, and your uid/gid.
+2. **Creates the root `.env`** from `.env.example` if it does not exist, seeded with detected
+   defaults.
+3. **Creates each service's `.env`** from its `.env.example`.
+4. **Syncs** `TZ`, `PUID`, `PGID`, `MEDIA_ROOT` and `EXTERNAL_STORAGE` from the root `.env` into
+   every service `.env` that declares them. The root `.env` is the single source of truth; re-run
+   the script any time you move your storage.
+5. **Generates** any secret still empty — `AUTH_SECRET`, all the Coolify keys, both DB passwords —
+   with `openssl`. It never overwrites a value you already set.
+6. **Creates** `MEDIA_ROOT/{Audio,Videos,Images,Documents}`, the same four on the external volume,
+   and `COOLIFY_STORAGE/{ssh,applications,databases,services,backups,postgres,redis}`. It warns
+   loudly if the external volume is not actually mounted.
+
+It is idempotent — running it twice changes nothing the second time.
+
+**Check:** no secret is left empty, and no path still says `CHANGEME`.
 
 ```bash
-openssl rand -hex 32                      # AUTH_SECRET (papra)
-openssl rand -hex 24                      # any DB_PASSWORD / REDIS_PASSWORD / PUSHER_APP_KEY|SECRET
-openssl rand -hex 16                      # APP_ID / PUSHER_APP_ID (coolify)
-echo "base64:$(openssl rand -base64 32)"  # APP_KEY (coolify) — keep the base64: prefix
-id -u; id -g                              # UID / GID for papra (usually 501 and 20)
-```
-
-Fill in every blank key:
-
-| File                 | Keys that must not stay empty                                                    |
-| -------------------- | -------------------------------------------------------------------------------- |
-| `papra-doc/.env`     | `AUTH_SECRET`; confirm `UID`/`GID` match `id -u` / `id -g`                       |
-| `immich-photos/.env` | `DB_PASSWORD`                                                                    |
-| `coolify/.env`       | `APP_ID`, `APP_KEY`, `DB_PASSWORD`, `REDIS_PASSWORD`, `PUSHER_APP_ID/KEY/SECRET` |
-
-**Check:** no key is left with an empty value.
-
-```bash
-grep -H '=$' papra-doc/.env immich-photos/.env coolify/.env || echo "All keys filled ✓"
+grep -rn 'CHANGEME' --include='.env' .                     # must print nothing
+grep -HE '^[A-Z_]+=$' .env */.env || echo "All keys filled ✓"
 ```
 
 **Check:** your secrets are ignored by git.
 
 ```bash
-git status --short          # no .env files should appear
-git check-ignore -v coolify/.env papra-doc/.env immich-photos/.env
+git status --short                       # no .env should appear
+git check-ignore -v .env coolify/.env papra-doc/.env immich-photos/.env
+```
+
+### Doing it by hand instead
+
+`configure.sh` is a convenience, not a requirement. Each service reads the `.env` sitting next to
+its `docker-compose.yml`, so this is equivalent:
+
+```bash
+cp jellyfin/.env.example jellyfin/.env
+$EDITOR jellyfin/.env      # set TZ, PUID, PGID, MEDIA_ROOT, EXTERNAL_STORAGE
+```
+
+Compose fails with a clear message if a required variable is missing — it will never silently
+mount the wrong thing:
+
+```text
+required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run ./configure.sh
 ```
 
 ---
 
-## Step 6 — Bring the services up
+## Step 4 — Platform-specific tuning (optional)
+
+Everything runs with defaults. These are the knobs worth turning on each OS.
+
+### 🐧 Linux tuning
+
+| What                              | Where                                  | Why                                                                                      |
+| --------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Home Assistant host net**       | `home-assistant/docker-compose.yml`    | Uncomment `network_mode: host` and comment out `ports:` — mDNS/SSDP discovery then works |
+| **Zigbee/Z-Wave dongle**          | `home-assistant/docker-compose.yml`    | Uncomment `devices:` and point it at `/dev/serial/by-id/...`                             |
+| **Jellyfin transcoding**          | `jellyfin/docker-compose.yml` + `.env` | Uncomment the `devices: /dev/dri` block, set `RENDER_GID` — real hardware transcoding    |
+| **Immich ML on GPU**              | `immich-photos/docker-compose.yml`     | Use the `-cuda` image tag and uncomment `deploy:` — imports go from hours to minutes     |
+| **Coolify manages the host**      | `coolify/docker-compose.yml`           | Uncomment the `/var/run/docker.sock` mount — this is the whole point of Coolify          |
+| **Coolify storage on local disk** | `coolify/.env` → `COOLIFY_STORAGE`     | Postgres on NFS/SMB is slow and corruption-prone. Point it at e.g. `/data/coolify`       |
+
+Driver prerequisites for the GPU rows are in
+[DOCKER-INSTALL.md § Optional Linux extras](./DOCKER-INSTALL.md#optional-linux-extras).
+
+### 🍎 macOS tuning
+
+| What               | Where                                     | Why                                                                       |
+| ------------------ | ----------------------------------------- | ------------------------------------------------------------------------- |
+| **VM memory**      | Docker Desktop → Resources → Memory       | The 8 GB default does not fit these stacks. Give it ~16 GB on a 32 GB Mac |
+| **File sharing**   | Docker Desktop → Resources → File sharing | Must include your home dir and `/Volumes`, or bind mounts fail            |
+| **Start at login** | Docker Desktop → General                  | `restart: unless-stopped` is useless if the daemon never starts           |
+
+The Linux rows above have **no macOS equivalent** — Docker Desktop's VM cannot pass through a GPU
+or a USB dongle, and its NAT'd network blocks L2 discovery. See
+[REQUIREMENTS.md § Platform differences](./REQUIREMENTS.md#platform-differences).
+
+---
+
+## Step 5 — Bring the services up
 
 Start them one at a time on a first run so a failure is obvious. Portainer goes first — it gives
 you a web UI to watch everything else come up.
 
-Each block is: start it, then confirm it.
+Each block is: start it, then confirm it. `open` below is macOS; on Linux use `xdg-open`, or just
+paste the URL into a browser.
 
-### 6.1 Portainer — port 9000
+### 5.1 Portainer — port 9000
 
 ```bash
 docker compose -f portainer/docker-compose.yaml up -d
-open http://localhost:9000
+open http://localhost:9000          # 🐧 xdg-open
 ```
 
-Create the admin account **immediately** — Portainer locks out new-admin setup after a few minutes
-of being up. If you hit that, restart the container and retry.
+Create the admin account **immediately** — Portainer disables new-admin setup a few minutes after
+it starts. If you hit that, restart the container and retry.
 
-### 6.2 Jellyfin — port 8096
+### 5.2 Jellyfin — port 8096
 
 ```bash
 docker compose -f jellyfin/docker-compose.yml up -d
 open http://localhost:8096
 ```
 
-In the setup wizard, add libraries pointing at `/data/videos` and `/data/videos-external`.
+In the wizard, add libraries pointing at `/data/videos` and `/data/videos-external`.
 
-### 6.3 Audiobookshelf — port 13378
+### 5.3 Audiobookshelf — port 13378
 
 ```bash
 docker compose -f audiobookshelf/docker-compose.yml up -d
@@ -207,42 +278,40 @@ open http://localhost:13378
 
 Libraries live at `/audiobooks`, `/books`, `/audiobooks-external`, `/books-external`.
 
-### 6.4 Home Assistant — port 8123
+### 5.4 Home Assistant — port 8123
 
 ```bash
 docker compose -f home-assistant/docker-compose.yml up -d
 open http://localhost:8123
 ```
 
-Give it 1–2 minutes on first boot — it generates its config before serving. This one runs
-`privileged` with `NET_ADMIN`/`NET_RAW`, so treat `home-assistant/config/` as sensitive.
+Give it 1–2 minutes on first boot — it generates its config before serving. It runs `privileged`
+with `NET_ADMIN`/`NET_RAW`, so treat `home-assistant/config/` as security-sensitive.
 
-### 6.5 Obsidian — port 3000
+🐧 On Linux, switch it to `network_mode: host` (Step 4) if you want device discovery.
+🍎 On macOS, discovery will not work regardless — the Docker VM is NAT'd off your LAN.
+
+### 5.5 Obsidian — port 3000
 
 ```bash
 docker compose -f obsidian-brain/docker-compose.yml up -d
 open http://localhost:3000
 ```
 
-You get a full Obsidian GUI in the browser, not an API. Vaults go under `./obsidian/config`.
+A full Obsidian GUI in the browser, not an API. Vaults go under `./obsidian/config`. It runs as
+your `PUID`/`PGID`, so the vault stays editable from the host on both OSes.
 
-> **Known wart:** this stack uses `PUID=1000` / `PGID=1000`, while everything else uses the macOS
-> pair `501`/`20`. Files it writes will be owned by a UID that doesn't exist on your Mac. If you
-> want to edit the vault from Finder, change those two values in
-> `obsidian-brain/docker-compose.yml` to `501` and `20` and recreate the container.
-
-### 6.6 Papra — port 1221
+### 5.6 Papra — port 1221
 
 ```bash
 docker compose -f papra-doc/docker-compose.yml up -d
 open http://localhost:1221
 ```
 
-> **Known wart:** the compose file mounts _two_ host paths onto `/app/app-data` (`./` and
-> `/Volumes/<EXTERNAL_STORAGE>/Documents`). The second wins; the first is dead weight. Harmless
-> today, but delete one of the two next time you edit that file.
+Its data folder is `EXTERNAL_STORAGE/Documents`; `MEDIA_ROOT/Documents` is mounted separately at
+`/data/documents` for imports.
 
-### 6.7 Immich — port 2283 (4 containers)
+### 5.7 Immich — port 2283 (4 containers)
 
 ```bash
 docker compose -f immich-photos/docker-compose.yml up -d
@@ -250,55 +319,78 @@ docker compose -f immich-photos/docker-compose.yml ps      # all 4 should be Up
 open http://localhost:2283
 ```
 
-First start is slow: postgres initializes and the ML container downloads models into `./ml-cache`.
-Watch it if you're impatient:
+First start is slow: Postgres initialises and the ML container downloads models into `./ml-cache`.
+Watch it if you are impatient:
 
 ```bash
 docker compose -f immich-photos/docker-compose.yml logs -f immich-server
 ```
 
-Photos are at `/mnt/external-data` (read-write, NAS) and `/mnt/external-library`
-(**read-only**, your `~/Images`).
+Photos are at `/mnt/external-data` (read-write, external volume) and `/mnt/external-library`
+(**read-only**, your `MEDIA_ROOT/Images`).
 
-### 6.8 Coolify — port 8000 (4 containers)
+### 5.8 Coolify — port 8000 (4 containers)
 
-**Confirm the NAS is mounted before this one** (Step 3). Coolify keeps all of its state there.
+**Confirm the storage is mounted before this one** (Step 2). Coolify keeps all its state there.
 
 ```bash
-ls "/Volumes/${EXTERNAL_STORAGE}/Storage/coolify"     # must exist and be on the real NAS
+ls "$(grep '^COOLIFY_STORAGE=' coolify/.env | cut -d= -f2-)"    # must exist, on real storage
 docker compose -f coolify/docker-compose.yml up -d
 docker compose -f coolify/docker-compose.yml ps
 open http://localhost:8000
 ```
 
-The `coolify` UI container has `depends_on: condition: service_healthy` for postgres, redis, and
-soketi, so it stays in `Created` until all three pass healthchecks. On a slow NAS this takes a
-couple of minutes — that is normal, not a failure. Check with `ps` before debugging.
+The `coolify` container has `depends_on: condition: service_healthy` for Postgres, Redis and
+soketi, so it stays in `Created` until all three pass their healthchecks. On slow storage that
+takes a couple of minutes — normal, not a failure. Check `ps` before debugging.
+
+🐧 On Linux this is a real PaaS: give it the Docker socket (Step 4) and it can deploy to this host.
+🍎 On macOS it installs and the UI works, but it cannot manage the Mac itself — it expects to SSH
+into a Linux host, and the daemon lives inside a VM. Treat it as a dashboard, not a deploy target.
 
 ---
 
-## Step 7 — Verify everything
+## Step 6 — Verify everything
 
 ```bash
-docker ps                # 13 containers across the 8 stacks
+docker ps                 # 14 containers across the 8 stacks
 ./test-services.sh
 ```
 
-`test-services.sh` prints container health, curls each service over the Tailscale IP, and then
-reports whether each Tailscale peer is `[DIRECT]` or `[RELAY]`.
+`test-services.sh` prints container health, curls each service, and reports whether each Tailscale
+peer is `[DIRECT]` or `[RELAY]`. It probes `SERVICE_HOST` from the root `.env` (default
+`127.0.0.1`); override it to check remote reachability:
 
-**A healthy run** shows `[OK]` for all 8 services. Codes `200`, `301`, `302`, `400`, `401`, and
-`403` all count as OK — a login redirect still proves the service is listening.
+```bash
+SERVICE_HOST=100.105.40.95 ./test-services.sh
+```
+
+**A healthy run** shows `[OK]` for all 8 services. Codes `200`, `301`, `302`, `400`, `401` and
+`403` all count as OK — a login redirect still proves the service is listening. If Tailscale is
+not installed, that section is skipped rather than failing.
 
 ---
 
-## Step 8 — Remote access over Tailscale
+## Step 7 — Remote access over Tailscale
 
-Once Tailscale is up on the Mac mini, every service is reachable from any device on your tailnet:
+Optional, but it is how the lab is reached from outside the house.
+
+```bash
+# 🍎 macOS
+brew install --cask tailscale        # or the Mac App Store build
+# 🐧 Linux
+curl -fsSL https://tailscale.com/install.sh | sh
+
+sudo tailscale up
+tailscale status
+```
+
+🐧 On Linux, also enable it at boot: `sudo systemctl enable --now tailscaled`.
+
+Every service is then reachable from any device on your tailnet:
 
 ```text
-http://<YOUR TAILSCALE ADDRESS>.ts.net:<port>
-http://100.105.40.95:<port>
+http://<your-machine>.<your-tailnet>.ts.net:<port>
 ```
 
 | Port | Service        |     | Port  | Service        |
@@ -309,9 +401,22 @@ http://100.105.40.95:<port>
 | 6001 | Coolify soketi |     | 9000  | Portainer      |
 |      |                |     | 13378 | Audiobookshelf |
 
-If `test-services.sh` reports `[RELAY]` for your peers, traffic is going through a DERP relay
-instead of a direct connection — it works but is slow and can drop long-lived sessions. The fix is
-a UDP 41641 port-forward on your router; see
+🐧 **Linux firewall.** Unlike macOS, most Linux distros ship a firewall that is on. Open the ports
+for the tailnet only — never `0.0.0.0`:
+
+```bash
+# ufw (Debian/Ubuntu)
+sudo ufw allow in on tailscale0
+sudo ufw reload
+
+# firewalld (Fedora/RHEL)
+sudo firewall-cmd --permanent --zone=trusted --add-interface=tailscale0
+sudo firewall-cmd --reload
+```
+
+If `test-services.sh` reports `[RELAY]`, traffic is going through a DERP relay instead of a direct
+connection — it works but is slow and drops long-lived sessions. The fix is a UDP 41641 port
+forward on your router; see
 [PLAN.md § Troubleshooting](./PLAN.md#troubleshooting-services-not-reachable-from-tailscale-peers).
 
 ---
@@ -322,11 +427,14 @@ a UDP 41641 port-forward on your router; see
 
 ```bash
 ./restart-all.sh
+./restart-all.sh --no-pull      # recreate without pulling
+./restart-all.sh --no-test      # skip the health check
 ```
 
 It runs in this order — `audiobookshelf → coolify → papra-doc → home-assistant → jellyfin →
-immich-photos → portainer → obsidian-brain` — skips any directory with no compose file, and calls
-`test-services.sh` at the end.
+immich-photos → portainer → obsidian-brain` — skips any directory with no compose file, skips any
+service missing its `.env`, and calls `test-services.sh` at the end. It exits non-zero if any
+stack failed.
 
 **One service:**
 
@@ -341,18 +449,59 @@ docker compose -f <service-dir>/docker-compose.yml up -d --remove-orphans
 (add `-v` only if you truly want to delete its named volumes — for Portainer that erases your
 Portainer config).
 
+**Move your storage:** edit `MEDIA_ROOT` / `EXTERNAL_STORAGE` in the root `.env`, re-run
+`./configure.sh`, then `./restart-all.sh`.
+
+🐧 **Reboot survival on Linux:** `restart: unless-stopped` only helps if the daemon starts.
+`sudo systemctl enable docker` once, and confirm with `systemctl is-enabled docker`.
+
+---
+
+## Migrating from the placeholder layout
+
+If you have an older checkout where you ran `sed` over the compose files:
+
+```bash
+# 1. Discard the machine-local substitutions — they are no longer needed.
+git update-index --no-skip-worktree $(git ls-files '*.yml' '*.yaml') 2>/dev/null || true
+git checkout -- '*.yml' '*.yaml'
+
+# 2. Pull the new layout, then configure.
+git pull
+cp .env.example .env
+$EDITOR .env          # MEDIA_ROOT + EXTERNAL_STORAGE — note EXTERNAL_STORAGE is now a FULL PATH,
+                      # e.g. /Volumes/NAS, not just "NAS"
+./configure.sh        # keeps every secret you already had
+
+# 3. Restart.
+./restart-all.sh
+```
+
+`configure.sh` also drops the old `UID`/`GID` keys from `papra-doc/.env`, replaced by
+`PUID`/`PGID`. Nothing else about your data moves — the bind-mount targets resolve to the same
+paths they did before.
+
 ---
 
 ## Troubleshooting
 
-| Symptom                                       | Cause                                                                                  | Fix                                                                                                                    |
-| --------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Service starts but its library is empty       | Placeholders never substituted — Docker mounted a literal `<ROOT_USERNAME>` directory  | Re-run Step 2, then `ls /Users/` and `ls /Volumes/` and delete the bogus `<...>` directories                           |
-| `Error: path ... is not shared from the host` | Docker Desktop file sharing                                                            | Add your home dir and `/Volumes` under Settings → Resources → File sharing                                             |
-| Coolify UI never leaves `Created`             | Waiting on postgres/redis/soketi healthchecks                                          | `docker compose -f coolify/docker-compose.yml ps`; give it 2 min; then check `docker logs coolify-db`                  |
-| Coolify came up empty / lost its data         | Started with the NAS unmounted, so postgres initialized a fresh DB on a stub directory | `down`, verify Step 3, remount, bring it up again                                                                      |
-| `variable is not set` warnings on `up`        | `.env` missing or a key left blank                                                     | Re-do Step 5 for that service                                                                                          |
-| Papra exits immediately                       | `UID`/`GID` missing from `papra-doc/.env` (`user:` gets an empty value)                | Set them to `id -u` / `id -g`                                                                                          |
-| Immich errors after an update                 | Pending DB migrations                                                                  | `docker compose -f immich-photos/docker-compose.yml logs -f immich-db`; pin `IMMICH_VERSION` to control upgrade timing |
-| Port already in use                           | Another process holds it                                                               | `lsof -i :<port>` to find it                                                                                           |
-| Reachable locally, not from other devices     | Tailscale DERP relay                                                                   | See Step 8 / PLAN.md troubleshooting                                                                                   |
+| Symptom                                           | OS   | Cause                                                                         | Fix                                                                                          |
+| ------------------------------------------------- | ---- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `required variable MEDIA_ROOT is missing a value` | both | No `.env` next to that compose file                                           | `./configure.sh`                                                                             |
+| Service starts but its library is empty           | both | `EXTERNAL_STORAGE` points at an unmounted path                                | Re-do Step 2, delete the empty stub directory, restart the stack                             |
+| `path ... is not shared from the host`            | 🍎   | Docker Desktop file sharing                                                   | Settings → Resources → File sharing: add your home dir and `/Volumes`                        |
+| `permission denied` writing to a mounted share    | 🐧   | CIFS/NFS mounted as root                                                      | Add `uid=$(id -u),gid=$(id -g)` to the fstab options, or fix ownership on the NFS export     |
+| Files owned by a uid that does not exist          | both | `PUID`/`PGID` do not match your user                                          | `id -u; id -g`, fix the root `.env`, re-run `./configure.sh`, recreate the container         |
+| Coolify UI never leaves `Created`                 | both | Waiting on postgres/redis/soketi healthchecks                                 | `docker compose -f coolify/docker-compose.yml ps`; wait 2 min; then `docker logs coolify-db` |
+| Coolify came up empty / lost its data             | both | Started with the storage unmounted, so Postgres made a fresh DB on a stub dir | `down`, verify Step 2, remount, bring it up again                                            |
+| Coolify cannot deploy anything                    | 🍎   | Expected — it needs a Linux host it can SSH into                              | Not fixable on macOS; use it as a dashboard only                                             |
+| Home Assistant finds no devices                   | 🍎   | The Docker VM is NAT'd; no L2 broadcast                                       | Not fixable on macOS                                                                         |
+| Home Assistant finds no devices                   | 🐧   | Bridge networking blocks mDNS/SSDP                                            | Switch to `network_mode: host` (Step 4)                                                      |
+| Jellyfin pegs the CPU while streaming             | 🍎   | No GPU passthrough, so every transcode is CPU-only                            | Force direct-play in the client, or move to a Linux host                                     |
+| Jellyfin pegs the CPU while streaming             | 🐧   | Hardware transcoding not enabled                                              | Uncomment the `/dev/dri` block (Step 4) and enable VAAPI/QSV in Jellyfin's dashboard         |
+| Immich errors after an update                     | both | Pending DB migrations                                                         | `docker compose -f immich-photos/docker-compose.yml logs -f immich-db`; pin `IMMICH_VERSION` |
+| Port already in use                               | 🍎   | Another process holds it                                                      | `lsof -i :<port>`                                                                            |
+| Port already in use                               | 🐧   | Another process holds it                                                      | `sudo ss -lptn "sport = :<port>"`                                                            |
+| Containers gone after a reboot                    | 🐧   | Docker not enabled as a service                                               | `sudo systemctl enable --now docker`                                                         |
+| Containers gone after a reboot                    | 🍎   | Docker Desktop not set to start at login                                      | Settings → General → Start Docker Desktop when you log in                                    |
+| Reachable locally, not from other devices         | both | Tailscale DERP relay, or a Linux firewall                                     | See Step 7                                                                                   |

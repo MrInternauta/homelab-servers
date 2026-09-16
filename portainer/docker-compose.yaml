@@ -1,10 +1,17 @@
+# Portainer — Docker management UI. http://localhost:9000
+#
+# The Docker socket path is the same on macOS and Linux. On Linux your user
+# must be in the `docker` group (or run this stack with sudo) for the bind
+# mount to be usable — see DOCKER-INSTALL.md.
 services:
   portainer:
     image: portainer/portainer-ce:lts
     container_name: portainer
     restart: unless-stopped
     ports:
-      - "9000:9000"
+      - 9000:9000
+    environment:
+      - TZ=${TZ:-America/Mexico_City}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - portainer_data:/data
