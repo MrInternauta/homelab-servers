@@ -56,7 +56,7 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
 - **audiobookshelf/** — Port 13378 (`13378:80`). The image ignores `PUID`/`PGID`, so it takes a
   plain `user: "${PUID}:${PGID}"` directive instead. Config/metadata in `${APPDATA_ROOT}/audiobookshelf/`.
 - **papra-doc/** — Port 1221. Runs as `user: "${PUID}:${PGID}"`. Needs `AUTH_SECRET` from its
-  `.env`. Its data folder is `${EXTERNAL_STORAGE}/Documents`.
+  `.env`. SQLite DB in `/opt/papra/db`, documents in `/mnt/backup/Documents/documents` (fixed Linux paths).
 - **home-assistant/** — Port 8123. `privileged: true` plus `NET_ADMIN` + `NET_RAW`.
   🐧 On Linux, uncomment `network_mode: host` for working mDNS/SSDP discovery, and the `devices:`
   block for a Zigbee/Z-Wave dongle. 🍎 On macOS neither helps — the Docker VM is NAT'd off the LAN.
@@ -101,8 +101,8 @@ Nothing is stored inside the repo: every container's own state lives under `${AP
 | immich         | `${EXTERNAL_STORAGE}/Images`                                                      | `/mnt/external-data`                      | rw      |
 | immich         | `${MEDIA_ROOT}/Images`                                                            | `/mnt/external-library`                   | **ro**  |
 | immich         | `${APPDATA_ROOT}/immich/{db-data,ml-cache}`                                       | postgres data, `/cache`                   | rw      |
-| papra          | `${EXTERNAL_STORAGE}/Documents`                                                   | `/app/app-data`                           | rw      |
-| papra          | `${MEDIA_ROOT}/Documents`                                                         | `/data/documents`                         | rw      |
+| papra          | `/opt/papra/db`                                                                   | `/app/app-data/db`                        | rw      |
+| papra          | `/mnt/backup/Documents/documents`                                                 | `/app/app-data/documents`                 | rw      |
 | home-assistant | `${APPDATA_ROOT}/home-assistant/config`, `./run/dbus`                             | `/config`, `/run/dbus`                    | rw / ro |
 | obsidian       | `${APPDATA_ROOT}/obsidian/config`                                                 | `/config`                                 | rw      |
 | coolify        | `${COOLIFY_STORAGE}/{ssh,applications,databases,services,backups,postgres,redis}` | various under `/var/www/html/storage/app` | rw      |
