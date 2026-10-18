@@ -33,7 +33,7 @@ services:
     # macOS has no GPU passthrough, so it always runs CPU-only there.
     image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}
     volumes:
-      - ./ml-cache:/cache
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/immich/ml-cache:/cache
     env_file:
       - .env
     environment:
@@ -63,8 +63,9 @@ services:
       POSTGRES_USER: ${DB_USERNAME:-immich}
       POSTGRES_DB: ${DB_DATABASE_NAME:-immich}
     volumes:
-      # Repo-local on purpose: the database is small, and a NAS round-trip
-      # would make Postgres crawl.
-      - ./db-data:/var/lib/postgresql/data
+      # On the external volume with the rest of the app data. Keep that volume
+      # APFS or ext4 — not exFAT, NFS or SMB: Postgres needs real permissions
+      # and fsync. To keep the DB on the internal disk, use ./db-data instead.
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env}/immich/db-data:/var/lib/postgresql/data
     shm_size: 128mb
     restart: always

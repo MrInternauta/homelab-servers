@@ -46,15 +46,18 @@ runs the lab but swaps hard the moment Immich imports while Jellyfin transcodes.
 back. The same workload fits comfortably in ~4 GB less.
 
 **Disk.** Beyond images (immich-ml ~4 GB, home-assistant ~2 GB, jellyfin ~1.5 GB, coolify ~1.5 GB,
-rest smaller), the boot disk also carries:
+rest smaller), the disk holding `APPDATA_ROOT` (the external volume by default) carries:
 
-| Path                     | Growth                                         |
-| ------------------------ | ---------------------------------------------- |
-| `immich-photos/db-data`  | ~1 GB per 100k assets                          |
-| `immich-photos/ml-cache` | ~3 GB of downloaded models                     |
-| `jellyfin/cache`         | 5–20 GB of transcode scratch                   |
-| `home-assistant/config`  | 1–5 GB; the recorder DB grows continuously     |
-| Docker image layers      | Coolify builds accumulate here, not on the NAS |
+| Path                                   | Growth                                     |
+| -------------------------------------- | ------------------------------------------ |
+| `${APPDATA_ROOT}/immich/db-data`       | ~1 GB per 100k assets                      |
+| `${APPDATA_ROOT}/immich/ml-cache`      | ~3 GB of downloaded models                 |
+| `${APPDATA_ROOT}/jellyfin/cache`       | 5–20 GB of transcode scratch               |
+| `${APPDATA_ROOT}/home-assistant/config`| 1–5 GB; the recorder DB grows continuously |
+
+Docker image layers stay wherever Docker keeps its disk — Coolify builds accumulate there.
+🍎 Docker Desktop can move its disk image to the external volume too: Settings → Resources →
+Advanced → *Disk image location*.
 
 The smaller disk sizes are workable only if you stay on top of `docker system prune`.
 🐧 On Linux that all lives under `/var/lib/docker` — give `/var` its own room, or move the

@@ -63,6 +63,24 @@ if ! docker info >/dev/null 2>&1; then
 	exit 1
 fi
 
+# Every app keeps its state on EXTERNAL_STORAGE. Starting without it mounted
+# would hand each container an empty directory — a "fresh install" that looks
+# like data loss — so refuse instead.
+EXTERNAL_STORAGE="$(awk -F= '$1=="EXTERNAL_STORAGE" { sub(/^[^=]*=/,""); v=$0 } END { print v }' \
+	"${SERVERS_DIR}/.env" 2>/dev/null || true)"
+if [[ -n ${EXTERNAL_STORAGE} ]]; then
+	if [[ ${HOST_OS} == "Linux" ]] && command -v mountpoint >/dev/null 2>&1; then
+		mountpoint -q "${EXTERNAL_STORAGE}" && mounted=1 || mounted=0
+	else
+		mount | grep -qE " on ${EXTERNAL_STORAGE} " && mounted=1 || mounted=0
+	fi
+	if ((!mounted)); then
+		echo "${EXTERNAL_STORAGE} is not mounted — plug in / mount the external disk first." >&2
+		echo "All container config, metadata and databases live there." >&2
+		exit 1
+	fi
+fi
+
 failed=()
 
 restart_service() {

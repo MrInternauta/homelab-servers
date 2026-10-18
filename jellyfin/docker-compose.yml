@@ -11,8 +11,8 @@ services:
       - PGID=${PGID:-20}
       - TZ=${TZ:-America/Mexico_City}
     volumes:
-      - ./config:/config
-      - ./cache:/cache
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/jellyfin/config:/config
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env}/jellyfin/cache:/cache
       - ${MEDIA_ROOT:?set MEDIA_ROOT in .env — run ./configure.sh}/Videos:/data/videos
       - ${EXTERNAL_STORAGE:?set EXTERNAL_STORAGE in .env — run ./configure.sh}/Videos:/data/videos-external
     ports:

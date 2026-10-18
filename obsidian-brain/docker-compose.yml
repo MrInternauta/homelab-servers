@@ -15,7 +15,7 @@ services:
       - TZ=${TZ:-America/Mexico_City}
     volumes:
       # Obsidian configuration and your vaults.
-      - ./obsidian/config:/config
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/obsidian/config:/config
     ports:
       - 3000:3000 # HTTP web GUI
       - 3001:3001 # HTTPS web GUI

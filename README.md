@@ -50,6 +50,7 @@ read from the `.env` next to each `docker-compose.yml`:
 | `EXTERNAL_STORAGE` | NAS / external disk mount point (**full path**) | `/Volumes/<Volume>`   | `/mnt/nas`      |
 | `PUID` / `PGID`    | Host uid/gid the containers write as            | `501` / `20`          | `1000` / `1000` |
 | `TZ`               | Timezone for every container                    | `America/Mexico_City` | same            |
+| `APPDATA_ROOT`     | Every container's config/cache/DB (one dir each) | `${EXTERNAL_STORAGE}/Storage` | same |
 
 The **root `.env` is the source of truth**; `configure.sh` fans it out into every service. A
 missing value produces a clear error instead of a silently-empty mount.

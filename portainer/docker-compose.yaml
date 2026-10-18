@@ -14,7 +14,4 @@ services:
       - TZ=${TZ:-America/Mexico_City}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - portainer_data:/data
-
-volumes:
-  portainer_data:
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/portainer/data:/data
