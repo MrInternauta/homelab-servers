@@ -197,6 +197,7 @@ if ((DRY_RUN)) && [[ ! -f .env ]]; then
 	PGID_V="${DEF_PGID}"
 	MEDIA_ROOT_V="${DEF_MEDIA_ROOT}"
 	EXTERNAL_STORAGE_V="${DEF_EXTERNAL_STORAGE}"
+	APPDATA_ROOT_V=""
 else
 	TZ_V="$(get_env .env TZ)"
 	TZ_V="${TZ_V:-America/Mexico_City}"
@@ -206,6 +207,7 @@ else
 	PGID_V="${PGID_V:-${DEF_PGID}}"
 	MEDIA_ROOT_V="$(get_env .env MEDIA_ROOT)"
 	EXTERNAL_STORAGE_V="$(get_env .env EXTERNAL_STORAGE)"
+	APPDATA_ROOT_V="$(get_env .env APPDATA_ROOT)"
 fi
 
 [[ ${MEDIA_ROOT_V} == *CHANGEME* || -z ${MEDIA_ROOT_V} ]] &&
@@ -213,10 +215,18 @@ fi
 [[ ${EXTERNAL_STORAGE_V} == *CHANGEME* || -z ${EXTERNAL_STORAGE_V} ]] &&
 	die "EXTERNAL_STORAGE is not set in .env — edit it, then re-run ./configure.sh"
 
+# Container state (config, caches, databases) defaults to the external volume.
+if [[ -z ${APPDATA_ROOT_V} ]]; then
+	APPDATA_ROOT_V="${EXTERNAL_STORAGE_V}/Storage"
+	[[ -f .env ]] && put_env .env APPDATA_ROOT "${APPDATA_ROOT_V}"
+	ok "APPDATA_ROOT defaulted to ${APPDATA_ROOT_V}"
+fi
+
 info "TZ               = ${TZ_V}"
 info "PUID/PGID        = ${PUID_V}/${PGID_V}"
 info "MEDIA_ROOT       = ${MEDIA_ROOT_V}"
 info "EXTERNAL_STORAGE = ${EXTERNAL_STORAGE_V}"
+info "APPDATA_ROOT     = ${APPDATA_ROOT_V}"
 
 # ── 5. Per-service .env ──────────────────────────────────────────────────────
 head_ "4. Service .env files"
@@ -239,7 +249,8 @@ for svc in "${SERVICES[@]}"; do
 	# Shared host settings are always re-synced from the root .env — but only the
 	# keys a given service actually declares in its .env.example.
 	for kv in "TZ=${TZ_V}" "PUID=${PUID_V}" "PGID=${PGID_V}" \
-		"MEDIA_ROOT=${MEDIA_ROOT_V}" "EXTERNAL_STORAGE=${EXTERNAL_STORAGE_V}"; do
+		"MEDIA_ROOT=${MEDIA_ROOT_V}" "EXTERNAL_STORAGE=${EXTERNAL_STORAGE_V}" \
+		"APPDATA_ROOT=${APPDATA_ROOT_V}"; do
 		if grep -qE "^[[:space:]]*${kv%%=*}[[:space:]]*=" "${svc}/.env.example"; then
 			put_env "${svc}/.env" "${kv%%=*}" "${kv#*=}"
 		fi
@@ -260,7 +271,7 @@ COOLIFY_STORAGE_V=""
 if [[ -f coolify/.env ]]; then
 	COOLIFY_STORAGE_V="$(get_env coolify/.env COOLIFY_STORAGE)"
 	if [[ -z ${COOLIFY_STORAGE_V} ]]; then
-		COOLIFY_STORAGE_V="${EXTERNAL_STORAGE_V}/Storage/coolify"
+		COOLIFY_STORAGE_V="${APPDATA_ROOT_V}/coolify"
 		put_env coolify/.env COOLIFY_STORAGE "${COOLIFY_STORAGE_V}"
 		ok "COOLIFY_STORAGE defaulted to ${COOLIFY_STORAGE_V}"
 	else
@@ -304,21 +315,42 @@ for d in Audio Videos Images Documents; do make_dir "${MEDIA_ROOT_V}/${d}"; done
 ok "local media dirs under ${MEDIA_ROOT_V}"
 
 # shellcheck disable=SC2310  # is_mounted is a predicate; a false result is the point
+EXTERNAL_MOUNTED=0
 if [[ -d ${EXTERNAL_STORAGE_V} ]] && is_mounted "${EXTERNAL_STORAGE_V}"; then
+	EXTERNAL_MOUNTED=1
 	for d in Audio Videos Images Documents; do make_dir "${EXTERNAL_STORAGE_V}/${d}"; done
 	ok "external storage dirs under ${EXTERNAL_STORAGE_V}"
 else
 	warn "${EXTERNAL_STORAGE_V} is NOT a mounted volume."
-	warn "Mount it BEFORE starting any stack — otherwise Docker creates an empty"
-	warn "directory there and Coolify's Postgres initialises a blank database."
+	warn "Mount it BEFORE starting any stack — otherwise Docker creates empty"
+	warn "directories there and every app (and its database) starts from blank."
 	warn "See SETUP.md § Step 2 — Mount the external storage."
 fi
 
-if [[ -n ${COOLIFY_STORAGE_V} ]]; then
-	for d in ssh applications databases services backups postgres redis; do
-		make_dir "${COOLIFY_STORAGE_V}/${d}"
+# on_external <path> — true if the path lives under EXTERNAL_STORAGE
+on_external() { [[ $1 == "${EXTERNAL_STORAGE_V}" || $1 == "${EXTERNAL_STORAGE_V}"/* ]]; }
+
+# App-state and Coolify dirs are only created when their disk is really there,
+# so an unplugged volume never gets a stub tree on the internal disk.
+if on_external "${APPDATA_ROOT_V}" && ((!EXTERNAL_MOUNTED)); then
+	warn "skipped app-state dirs under ${APPDATA_ROOT_V} — volume not mounted"
+else
+	for d in audiobookshelf/config audiobookshelf/metadata jellyfin/config jellyfin/cache \
+		home-assistant/config immich/db-data immich/ml-cache obsidian/config portainer/data; do
+		make_dir "${APPDATA_ROOT_V}/${d}"
 	done
-	ok "coolify state dirs under ${COOLIFY_STORAGE_V}"
+	ok "app-state dirs under ${APPDATA_ROOT_V}"
+fi
+
+if [[ -n ${COOLIFY_STORAGE_V} ]]; then
+	if on_external "${COOLIFY_STORAGE_V}" && ((!EXTERNAL_MOUNTED)); then
+		warn "skipped coolify state dirs under ${COOLIFY_STORAGE_V} — volume not mounted"
+	else
+		for d in ssh applications databases services backups postgres redis; do
+			make_dir "${COOLIFY_STORAGE_V}/${d}"
+		done
+		ok "coolify state dirs under ${COOLIFY_STORAGE_V}"
+	fi
 fi
 
 # ── 8. Summary ───────────────────────────────────────────────────────────────

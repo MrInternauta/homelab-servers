@@ -21,6 +21,7 @@ from the `.env` file sitting next to each `docker-compose.yml`:
 | `EXTERNAL_STORAGE` | Mount point of the NAS / external disk, **full path**     | `/Volumes/NAS`                  | `/mnt/nas`       |
 | `PUID` / `PGID`    | Host uid/gid the containers write as                      | `501` / `20`                    | `1000` / `1000`  |
 | `TZ`               | Timezone for every container                              | `America/Mexico_City`           | same             |
+| `APPDATA_ROOT`     | Container state (config, caches, DBs), one dir per app    | `/Volumes/NAS/Storage`          | `/mnt/nas/Storage` |
 | `COOLIFY_STORAGE`  | Where all Coolify state lives (coolify only)              | `/Volumes/NAS/Storage/coolify`  | `/data/coolify`  |
 | `SERVICE_HOST`     | Address `test-services.sh` probes (root `.env` only)      | `127.0.0.1` or the Tailscale IP | same             |
 
@@ -53,27 +54,27 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
 ## Service Details
 
 - **audiobookshelf/** — Port 13378 (`13378:80`). The image ignores `PUID`/`PGID`, so it takes a
-  plain `user: "${PUID}:${PGID}"` directive instead. Config/metadata in `./config`, `./metadata`.
+  plain `user: "${PUID}:${PGID}"` directive instead. Config/metadata in `${APPDATA_ROOT}/audiobookshelf/`.
 - **papra-doc/** — Port 1221. Runs as `user: "${PUID}:${PGID}"`. Needs `AUTH_SECRET` from its
   `.env`. Its data folder is `${EXTERNAL_STORAGE}/Documents`.
 - **home-assistant/** — Port 8123. `privileged: true` plus `NET_ADMIN` + `NET_RAW`.
   🐧 On Linux, uncomment `network_mode: host` for working mDNS/SSDP discovery, and the `devices:`
   block for a Zigbee/Z-Wave dongle. 🍎 On macOS neither helps — the Docker VM is NAT'd off the LAN.
-- **jellyfin/** — Port 8096 (8920 HTTPS commented out). Config in `./config`, transcode cache in
-  `./cache`. 🐧 Linux can pass `/dev/dri` through for VAAPI/QSV hardware transcoding (commented
+- **jellyfin/** — Port 8096 (8920 HTTPS commented out). Config and transcode cache in
+  `${APPDATA_ROOT}/jellyfin/`. 🐧 Linux can pass `/dev/dri` through for VAAPI/QSV hardware transcoding (commented
   block + `RENDER_GID` in its `.env`), or an NVIDIA GPU via the `deploy:` block. 🍎 macOS is
   CPU-only, always.
 - **immich-photos/** — 4 containers on port 2283: `immich_server`, `immich_ml`, `immich_redis`
   (valkey 9), `immich_db` (Immich's pinned pgvector Postgres 14 image — do not swap it for stock
-  postgres). **DB data and ML cache are repo-local** (`./db-data`, `./ml-cache`), deliberately: a
-  network round-trip would make Postgres crawl. 🐧 Linux with an NVIDIA GPU can use the `-cuda` ML
+  postgres). DB data and ML cache live in `${APPDATA_ROOT}/immich/`. Keep that volume APFS/ext4 —
+  Postgres on exFAT, NFS or SMB is slow and corruption-prone. 🐧 Linux with an NVIDIA GPU can use the `-cuda` ML
   image tag.
-- **portainer/** — Port 9000, mounts the Docker socket, data in the named volume `portainer_data`.
+- **portainer/** — Port 9000, mounts the Docker socket, data in `${APPDATA_ROOT}/portainer/data`.
   🐧 On Linux your user must be in the `docker` group for that mount to be usable. Alternate
   `compose-with-tsdproxy.yaml` adds `tsdproxy.*` labels for a Tailscale proxy sidecar (the sidecar
   itself is not in this repo).
 - **obsidian-brain/** — LinuxServer Obsidian on 3000 (HTTP GUI) / 3001 (HTTPS). Chromium-based, so
-  `seccomp:unconfined` and `shm_size: 1gb`. Config & vaults in `./obsidian/config`. Runs as the
+  `seccomp:unconfined` and `shm_size: 1gb`. Config & vaults in `${APPDATA_ROOT}/obsidian/config`. Runs as the
   shared `PUID`/`PGID`, so the vault stays editable from the host on both OSes.
 - **coolify/** — 4 containers: `coolify` UI (`${APP_PORT:-8000}` → 8080), `coolify-db` (Postgres
   15), `coolify-redis` (Redis 7), `coolify-realtime` (soketi, 6001/6002), all on a dedicated
@@ -84,34 +85,36 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
 
 ## Storage Layout
 
-`./` is relative to the service directory inside this repo.
+Nothing is stored inside the repo: every container's own state lives under `${APPDATA_ROOT}`
+(default `${EXTERNAL_STORAGE}/Storage`), so the internal disk only carries the Docker images.
 
 | Service        | Host path                                                                         | Container path                            | Mode    |
 | -------------- | --------------------------------------------------------------------------------- | ----------------------------------------- | ------- |
-| audiobookshelf | `./config`, `./metadata`                                                          | `/config`, `/metadata`                    | rw      |
+| audiobookshelf | `${APPDATA_ROOT}/audiobookshelf/{config,metadata}`                                | `/config`, `/metadata`                    | rw      |
 | audiobookshelf | `${MEDIA_ROOT}/Audio`                                                             | `/audiobooks`                             | rw      |
 | audiobookshelf | `${MEDIA_ROOT}/Documents`                                                         | `/books`                                  | rw      |
 | audiobookshelf | `${EXTERNAL_STORAGE}/Audio`                                                       | `/audiobooks-external`                    | rw      |
 | audiobookshelf | `${EXTERNAL_STORAGE}/Documents`                                                   | `/books-external`                         | rw      |
-| jellyfin       | `./config`, `./cache`                                                             | `/config`, `/cache`                       | rw      |
+| jellyfin       | `${APPDATA_ROOT}/jellyfin/{config,cache}`                                         | `/config`, `/cache`                       | rw      |
 | jellyfin       | `${MEDIA_ROOT}/Videos`                                                            | `/data/videos`                            | rw      |
 | jellyfin       | `${EXTERNAL_STORAGE}/Videos`                                                      | `/data/videos-external`                   | rw      |
 | immich         | `${EXTERNAL_STORAGE}/Images`                                                      | `/mnt/external-data`                      | rw      |
 | immich         | `${MEDIA_ROOT}/Images`                                                            | `/mnt/external-library`                   | **ro**  |
-| immich         | `./db-data`, `./ml-cache`                                                         | postgres data, `/cache`                   | rw      |
+| immich         | `${APPDATA_ROOT}/immich/{db-data,ml-cache}`                                       | postgres data, `/cache`                   | rw      |
 | papra          | `${EXTERNAL_STORAGE}/Documents`                                                   | `/app/app-data`                           | rw      |
 | papra          | `${MEDIA_ROOT}/Documents`                                                         | `/data/documents`                         | rw      |
-| home-assistant | `./config`, `./run/dbus`                                                          | `/config`, `/run/dbus`                    | rw / ro |
-| obsidian       | `./obsidian/config`                                                               | `/config`                                 | rw      |
+| home-assistant | `${APPDATA_ROOT}/home-assistant/config`, `./run/dbus`                             | `/config`, `/run/dbus`                    | rw / ro |
+| obsidian       | `${APPDATA_ROOT}/obsidian/config`                                                 | `/config`                                 | rw      |
 | coolify        | `${COOLIFY_STORAGE}/{ssh,applications,databases,services,backups,postgres,redis}` | various under `/var/www/html/storage/app` | rw      |
-| portainer      | `/var/run/docker.sock`, `portainer_data`                                          | socket, `/data`                           | rw      |
+| portainer      | `/var/run/docker.sock`, `${APPDATA_ROOT}/portainer/data`                          | socket, `/data`                           | rw      |
 
 **Summary:** local media lives under `${MEDIA_ROOT}/{Audio,Videos,Images,Documents}`; the external
-volume mirrors those four and additionally holds all Coolify state under `${COOLIFY_STORAGE}`.
-Immich's database is _not_ on the external volume.
+volume mirrors those four and additionally holds every app's state under `${APPDATA_ROOT}`
+(Coolify's under `${COOLIFY_STORAGE}`, which defaults to `${APPDATA_ROOT}/coolify`).
+`restart-all.sh` refuses to start while `EXTERNAL_STORAGE` is unmounted.
 
-🐧 On Linux, `${COOLIFY_STORAGE}` is best pointed at a **local** disk (e.g. `/data/coolify`) rather
-than the NAS — Postgres over NFS/SMB is slow and prone to corruption.
+🐧 On Linux, `${APPDATA_ROOT}` and `${COOLIFY_STORAGE}` are best pointed at a **local** disk
+(e.g. `/data/homelab`, `/data/coolify`) when the external storage is a NAS — Postgres over NFS/SMB is slow and prone to corruption.
 
 ## Environment & Secrets
 

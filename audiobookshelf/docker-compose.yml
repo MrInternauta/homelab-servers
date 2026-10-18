@@ -14,9 +14,9 @@ services:
     environment:
       - TZ=${TZ:-America/Mexico_City}
     volumes:
-      # Persistent library state, kept next to this compose file.
-      - ./config:/config
-      - ./metadata:/metadata
+      # Persistent library state, on the external volume.
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/audiobookshelf/config:/config
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env}/audiobookshelf/metadata:/metadata
       # Host path on the left, container path on the right. Add more mounts
       # here for additional libraries.
       - ${MEDIA_ROOT:?set MEDIA_ROOT in .env — run ./configure.sh}/Audio:/audiobooks

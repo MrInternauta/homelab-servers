@@ -166,14 +166,16 @@ What it does, in order:
 2. **Creates the root `.env`** from `.env.example` if it does not exist, seeded with detected
    defaults.
 3. **Creates each service's `.env`** from its `.env.example`.
-4. **Syncs** `TZ`, `PUID`, `PGID`, `MEDIA_ROOT` and `EXTERNAL_STORAGE` from the root `.env` into
+4. **Syncs** `TZ`, `PUID`, `PGID`, `MEDIA_ROOT`, `EXTERNAL_STORAGE` and `APPDATA_ROOT` (default
+   `EXTERNAL_STORAGE/Storage`) from the root `.env` into
    every service `.env` that declares them. The root `.env` is the single source of truth; re-run
    the script any time you move your storage.
 5. **Generates** any secret still empty — `AUTH_SECRET`, all the Coolify keys, both DB passwords —
    with `openssl`. It never overwrites a value you already set.
 6. **Creates** `MEDIA_ROOT/{Audio,Videos,Images,Documents}`, the same four on the external volume,
-   and `COOLIFY_STORAGE/{ssh,applications,databases,services,backups,postgres,redis}`. It warns
-   loudly if the external volume is not actually mounted.
+   one state directory per app under `APPDATA_ROOT`, and
+   `COOLIFY_STORAGE/{ssh,applications,databases,services,backups,postgres,redis}`. It warns
+   loudly — and skips the external directories — if the external volume is not actually mounted.
 
 It is idempotent — running it twice changes nothing the second time.
 
@@ -298,7 +300,7 @@ docker compose -f obsidian-brain/docker-compose.yml up -d
 open http://localhost:3000
 ```
 
-A full Obsidian GUI in the browser, not an API. Vaults go under `./obsidian/config`. It runs as
+A full Obsidian GUI in the browser, not an API. Vaults go under `APPDATA_ROOT/obsidian/config`. It runs as
 your `PUID`/`PGID`, so the vault stays editable from the host on both OSes.
 
 ### 5.6 Papra — port 1221
@@ -319,7 +321,7 @@ docker compose -f immich-photos/docker-compose.yml ps      # all 4 should be Up
 open http://localhost:2283
 ```
 
-First start is slow: Postgres initialises and the ML container downloads models into `./ml-cache`.
+First start is slow: Postgres initialises and the ML container downloads models into `APPDATA_ROOT/immich/ml-cache`.
 Watch it if you are impatient:
 
 ```bash
