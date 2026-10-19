@@ -11,8 +11,10 @@ services:
       - PGID=${PGID:-20}
       - TZ=${TZ:-America/Mexico_City}
     volumes:
-      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/jellyfin/config:/config
-      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env}/jellyfin/cache:/cache
+      # Config and cache stay on the internal disk: Jellyfin's SQLite library
+      # DB locks badly over NFS, which is what APPDATA_ROOT is on this host.
+      - ./config:/config
+      - ./cache:/cache
       - ${MEDIA_ROOT:?set MEDIA_ROOT in .env — run ./configure.sh}/Videos:/data/videos
       - ${EXTERNAL_STORAGE:?set EXTERNAL_STORAGE in .env — run ./configure.sh}/Videos:/data/videos-external
     ports:
