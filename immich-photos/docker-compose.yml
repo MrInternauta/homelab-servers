@@ -9,7 +9,12 @@ services:
   immich-server:
     container_name: immich_server
     image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    # Run as the host user so it can write to the external volume (an NFS
+    # share squashes root).
+    user: "${PUID:?set PUID in .env}:${PGID:?set PGID in .env}"
     volumes:
+      # Immich's own storage: uploads, thumbnails, encoded video, backups.
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/immich/library:/data
       - ${EXTERNAL_STORAGE:?set EXTERNAL_STORAGE in .env — run ./configure.sh}/Images:/mnt/external-data
       - ${MEDIA_ROOT:?set MEDIA_ROOT in .env — run ./configure.sh}/Images:/mnt/external-library:ro
     env_file:
@@ -63,9 +68,8 @@ services:
       POSTGRES_USER: ${DB_USERNAME:-immich}
       POSTGRES_DB: ${DB_DATABASE_NAME:-immich}
     volumes:
-      # On the external volume with the rest of the app data. Keep that volume
-      # APFS or ext4 — not exFAT, NFS or SMB: Postgres needs real permissions
-      # and fsync. To keep the DB on the internal disk, use ./db-data instead.
-      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env}/immich/db-data:/var/lib/postgresql/data
+      # On the internal disk: APPDATA_ROOT is an NFS share here, and Postgres
+      # needs real permissions and fsync (it can't chown its data dir over NFS).
+      - ./db-data:/var/lib/postgresql/data
     shm_size: 128mb
     restart: always
