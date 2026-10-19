@@ -15,11 +15,23 @@ services:
     environment:
       - TZ=${TZ:-America/Mexico_City}
       - PAPRA_DATA_FOLDER=/app/app-data
+      # Ingestion folder: files dropped into ingestion/<org id>/ are imported
+      # and then deleted from there (drop copies, never originals).
+      - INGESTION_FOLDER_IS_ENABLED=true
+      - INGESTION_FOLDER_ROOT_PATH=/app/ingestion
+      - INGESTION_FOLDER_POST_PROCESSING_STRATEGY=delete
+      # The folder is on NFS: inotify only sees files written from this host.
+      # Files added from another machine are picked up on container restart.
+      # Papra's defaults plus macOS AppleDouble files, .url shortcuts
+      # and Dropbox markers.
+      - INGESTION_FOLDER_IGNORED_PATTERNS=**/.DS_Store,**/.env,**/desktop.ini,**/Thumbs.db,**/.git/**,**/.idea/**,**/.vscode/**,**/node_modules/**,**/@eaDir/**,**/*@SynoResource,**/*@SynoEAStream,**/._*,**/*.url,**/.dropbox
     volumes:
       # SQLite DB and stored documents are split: the DB on a local disk, the
-      # documents on the backup volume. Fixed Linux host paths.
+      # documents on the backup volume. Fixed Linux host paths. Papra's store
+      # is opaque (org/doc ids), so it lives apart from the Documents library.
       - /opt/papra/db:/app/app-data/db
-      - /mnt/backup/Documents/documents:/app/app-data/documents
+      - /mnt/backup/papra/documents:/app/app-data/documents
+      - /mnt/backup/papra/ingestion:/app/ingestion
     # Papra runs as this uid:gid, so the files it writes belong to you.
     # macOS: 501/20 — Linux: usually 1000/1000.
     user: "${PUID:?set PUID in .env}:${PGID:?set PGID in .env}"
