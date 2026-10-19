@@ -14,9 +14,10 @@ services:
     environment:
       - TZ=${TZ:-America/Mexico_City}
     volumes:
-      # Persistent library state, on the external volume.
-      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/audiobookshelf/config:/config
-      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env}/audiobookshelf/metadata:/metadata
+      # Persistent library state, on the internal disk: /config holds a SQLite
+      # DB, which locks badly over NFS (what APPDATA_ROOT is on this host).
+      - ./config:/config
+      - ./metadata:/metadata
       # Host path on the left, container path on the right. Add more mounts
       # here for additional libraries.
       - ${MEDIA_ROOT:?set MEDIA_ROOT in .env — run ./configure.sh}/Audio:/audiobooks

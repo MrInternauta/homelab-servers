@@ -329,7 +329,8 @@ docker compose -f immich-photos/docker-compose.yml logs -f immich-server
 ```
 
 Photos are at `/mnt/external-data` (read-write, external volume) and `/mnt/external-library`
-(**read-only**, your `MEDIA_ROOT/Images`).
+(**read-only**, your `MEDIA_ROOT/Images`). Uploads, thumbnails and encoded video live in
+`APPDATA_ROOT/immich/library`, mounted at `/data`.
 
 ### 5.8 Coolify — port 8000 (4 containers)
 
