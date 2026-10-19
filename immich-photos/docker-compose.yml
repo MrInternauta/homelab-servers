@@ -9,7 +9,12 @@ services:
   immich-server:
     container_name: immich_server
     image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    # Run as the owner of APPDATA_ROOT: NFS squashes root, so root can't write there.
+    user: "${PUID:-1000}:${PGID:-1000}"
     volumes:
+      # Uploads, thumbs, encoded video and DB backups. Without this bind, /data
+      # is an anonymous volume that is lost whenever the container is recreated.
+      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/immich/library:/data
       - ${EXTERNAL_STORAGE:?set EXTERNAL_STORAGE in .env — run ./configure.sh}/Images:/mnt/external-data
       - ${MEDIA_ROOT:?set MEDIA_ROOT in .env — run ./configure.sh}/Images:/mnt/external-library:ro
     env_file:
@@ -17,6 +22,9 @@ services:
     environment:
       DB_HOSTNAME: immich-db
       DB_PORT: 5432
+      # Same defaults as the immich-db service; Immich itself defaults to "postgres".
+      DB_USERNAME: ${DB_USERNAME:-immich}
+      DB_DATABASE_NAME: ${DB_DATABASE_NAME:-immich}
       REDIS_HOSTNAME: immich-redis
       TZ: ${TZ:-America/Mexico_City}
     ports:
@@ -32,6 +40,8 @@ services:
     # `deploy` block below for a large speed-up on imports. Docker Desktop on
     # macOS has no GPU passthrough, so it always runs CPU-only there.
     image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}
+    # Same as immich-server: NFS squashes root, so root can't write the cache.
+    user: "${PUID:-1000}:${PGID:-1000}"
     volumes:
       - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/immich/ml-cache:/cache
     env_file:
@@ -63,9 +73,8 @@ services:
       POSTGRES_USER: ${DB_USERNAME:-immich}
       POSTGRES_DB: ${DB_DATABASE_NAME:-immich}
     volumes:
-      # On the external volume with the rest of the app data. Keep that volume
-      # APFS or ext4 — not exFAT, NFS or SMB: Postgres needs real permissions
-      # and fsync. To keep the DB on the internal disk, use ./db-data instead.
-      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env}/immich/db-data:/var/lib/postgresql/data
+      # On the internal disk: APPDATA_ROOT may be NFS/SMB/exFAT, and Postgres
+      # needs real permissions and fsync. Photos and the ML cache stay external.
+      - ./db-data:/var/lib/postgresql/data
     shm_size: 128mb
     restart: always
