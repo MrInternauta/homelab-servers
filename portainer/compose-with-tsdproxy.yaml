@@ -13,7 +13,11 @@ services:
       - TZ=${TZ:-America/Mexico_City}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/portainer/data:/data
+      # Same named volume as docker-compose.yaml, so either variant keeps the data.
+      - portainer_data:/data
     labels:
       tsdproxy.enable: true
       tsdproxy.ephemeral: false
+
+volumes:
+  portainer_data:

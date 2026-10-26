@@ -457,7 +457,8 @@ Portainer config).
 
 🐧 **Reboot survival on Linux:** `restart: unless-stopped` only helps if the daemon starts.
 `sudo systemctl enable docker` once, and confirm with `systemctl is-enabled docker`. Then
-install the stack guard so nothing starts before the NAS is mounted, and stopped stacks come back:
+install the stack guard: it holds back the start until the NAS is mounted, restarts any stack Docker
+auto-started onto empty directories before the mount arrived, and brings stopped stacks back:
 
 ```bash
 ./install-autostart.sh                  # systemd service homelab-stack-guard (asks for sudo)

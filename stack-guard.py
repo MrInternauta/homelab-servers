@@ -60,6 +60,7 @@ PROBE_INTERVAL = 300  # seconds between HTTP probe rounds
 DOCKER_WAIT = 120  # seconds to wait for the Docker daemon on each check
 MAX_RESTARTS = 3  # per stack ...
 RESTART_WINDOW = 600  # ... within this many seconds
+STORAGE_FAILS = 3  # consecutive failed storage checks before stopping the stacks
 
 stop_event = threading.Event()
 
@@ -85,18 +86,19 @@ def read_env(path):
     return values
 
 
-def run_timed(cmd, timeout, capture=True):
+def run_timed(cmd, timeout, stderr=True):
     """Run cmd, never blocking past timeout + a few seconds.
 
     A command touching a dead `hard` NFS mount can sit in uninterruptible sleep
     and ignore SIGKILL, so don't wait for it forever after killing it.
-    Returns (returncode or None on timeout, stdout).
+    Returns (returncode or None on timeout, output). stderr=False drops stderr,
+    for commands whose stdout gets parsed (compose prints warnings on stderr).
     """
     try:
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.STDOUT if capture else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT if stderr else subprocess.DEVNULL,
             text=True,
         )
     except OSError as e:
@@ -131,31 +133,51 @@ class Stack:
     def __init__(self, name, root_env):
         self.name = name
         self.dir = os.path.join(ROOT_DIR, name)
-        self.compose = None
+        self.compose = self._running_compose_file()
         for fname in ("docker-compose.yml", "docker-compose.yaml"):
+            if self.compose:
+                break
             if os.path.isfile(os.path.join(self.dir, fname)):
                 self.compose = os.path.join(self.dir, fname)
-                break
         self.has_env = os.path.isfile(os.path.join(self.dir, ".env"))
         self.restarts = collections.deque()
-        self.gave_up = False
+        self.paused_until = None  # set when the restart budget runs out
         self.uses_storage = self._uses_storage(root_env)
+
+    def _running_compose_file(self):
+        """The compose file this stack's containers were started from, if it is
+        still in the stack directory (e.g. portainer/compose-with-tsdproxy.yaml),
+        so starting it again doesn't swap the variant."""
+        code, out = run_timed(
+            ["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project.working_dir={self.dir}",
+             "--format", '{{.Label "com.docker.compose.project.config_files"}}'], 20, stderr=False)
+        if code != 0:
+            return None
+        for line in out.splitlines():
+            path = line.split(",")[0].strip()
+            if os.path.dirname(path) == self.dir and os.path.isfile(path):
+                return path
+        return None
 
     def _uses_storage(self, root_env):
         """True if the stack mounts anything from EXTERNAL_STORAGE / APPDATA_ROOT."""
         if not self.compose:
             return False
         with open(self.compose) as f:
-            text = f.read()
-        if "APPDATA_ROOT" in text or "EXTERNAL_STORAGE" in text:
+            # Only variable references count — comments mention APPDATA_ROOT too.
+            text = "\n".join(line.split("#", 1)[0] for line in f)
+        used = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", text))
+        if used & {"APPDATA_ROOT", "EXTERNAL_STORAGE"}:
             return True
         storage = root_env.get("EXTERNAL_STORAGE", "")
         if not storage:
             return False
+        # A literal host path such as papra-doc's /mnt/backup/papra/documents.
+        if re.search(re.escape(storage) + r"(/|:|\s|$)", text):
+            return True
         # e.g. coolify's COOLIFY_STORAGE may point onto the external disk. Only
         # look at variables the compose file uses: configure.sh copies the shared
         # paths into every .env whether or not the stack mounts them.
-        used = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", text))
         env = read_env(os.path.join(self.dir, ".env"))
         return any(v == storage or v.startswith(storage + "/") for k, v in env.items() if k in used)
 
@@ -164,19 +186,21 @@ class Stack:
 
     def containers(self):
         """Containers of this stack as dicts, or None if compose failed."""
-        code, out = run_timed(self.compose_cmd("ps", "-a", "--format", "json"), 30)
+        code, out = run_timed(self.compose_cmd("ps", "-a", "--format", "json"), 30, stderr=False)
         if code != 0:
             return None
         out = out.strip()
-        if not out:
-            return []
-        if out.startswith("["):
-            return json.loads(out)
-        return [json.loads(line) for line in out.splitlines() if line.strip()]
+        try:
+            if out.startswith("["):
+                return json.loads(out)
+            return [json.loads(line) for line in out.splitlines() if line.strip()]
+        except ValueError:
+            return None
 
-    def problems(self):
+    def problems(self, items=None):
         """List of (service, reason) for containers that are not up and healthy."""
-        items = self.containers()
+        if items is None:
+            items = self.containers()
         if items is None:
             return [("*", "docker compose ps failed")]
         if not items:
@@ -210,6 +234,34 @@ class Stack:
     def stop(self):
         code, _ = run_timed(self.compose_cmd("stop"), 180)
         return code == 0
+
+    def restart(self):
+        code, _ = run_timed(self.compose_cmd("restart"), 300)
+        return code == 0
+
+    def stub_mounts(self, storage, fstype):
+        """Container paths bound from storage that, inside a running container,
+        are not on the storage filesystem — i.e. Docker started it from its
+        restart policy before the share was mounted, on an empty stub dir."""
+        stubs = []
+        for c in self.containers() or []:
+            if c.get("State") != "running":
+                continue
+            code, out = run_timed(["docker", "inspect", "-f", "{{.State.Pid}} {{json .Mounts}}", c["ID"]], 20, stderr=False)
+            if code != 0:
+                continue
+            pid, _, mounts = out.strip().partition(" ")
+            try:
+                with open(f"/proc/{pid}/mountinfo") as f:
+                    # mount point (field 5) -> fstype (first field after " - ")
+                    table = {line.split()[4]: line.split(" - ", 1)[1].split()[0] for line in f}
+            except (OSError, IndexError):
+                continue
+            for m in json.loads(mounts or "[]"):
+                src, dst = m.get("Source", ""), m.get("Destination", "")
+                if (src == storage or src.startswith(storage + "/")) and table.get(dst.replace(" ", "\\040")) != fstype:
+                    stubs.append(f"{c.get('Service', '?')}:{dst}")
+        return stubs
 
     def restart_services(self, services):
         code, _ = run_timed(self.compose_cmd("restart", *services), 300)
@@ -268,6 +320,12 @@ def check_server(path):
     return False, f"storage server {host} unreachable on port {port}"
 
 
+def storage_fstype(path):
+    code, out = run_timed(["findmnt", "-n", "-o", "FSTYPE", "--mountpoint", path], 10)
+    fstypes = [t for t in out.split() if t != "autofs"] if code == 0 else []
+    return fstypes[-1] if fstypes else None
+
+
 def check_mount(path):
     # Touch the path to trigger an x-systemd.automount. With automount,
     # `mountpoint -q` is true for the autofs placeholder alone, so confirm the
@@ -275,11 +333,10 @@ def check_mount(path):
     code, _ = run_timed(["stat", "-L", path + "/."], 15)
     if code is None:
         return False, f"{path} hangs (stale network mount?)"
-    code, out = run_timed(["findmnt", "-n", "-o", "FSTYPE", "--mountpoint", path], 10)
-    fstypes = [t for t in out.split() if t != "autofs"] if code == 0 else []
-    if not fstypes:
+    fstype = storage_fstype(path)
+    if not fstype:
         return False, f"{path} is not mounted — plug in / mount the external disk first"
-    return True, f"{path} mounted ({fstypes[-1]})"
+    return True, f"{path} mounted ({fstype})"
 
 
 def check_appdata(path):
@@ -348,7 +405,7 @@ def cmd_status(_args):
             log("FAIL", f"{stack.name:15} docker compose ps failed")
             continue
         running = sum(1 for c in items if c.get("State") == "running")
-        bad = stack.problems()
+        bad = stack.problems(items)
         tag = "OK" if not bad else "FAIL"
         detail = "" if not bad else "  (" + ", ".join(f"{s}: {r}" for s, r in bad) + ")"
         log(tag, f"{stack.name:15} {running}/{len(items)} running{detail}")
@@ -374,17 +431,23 @@ def heal(stack, now):
     """Bring a stack back up, with a restart budget per window."""
     bad = stack.problems()
     if not bad:
-        if stack.gave_up:
+        if stack.paused_until is not None:
             log("OK", f"{stack.name} is healthy again")
-            stack.gave_up = False
+            stack.paused_until = None
+        stack.restarts.clear()
         return
+    if stack.paused_until is not None:
+        if now < stack.paused_until:
+            return
+        log("WARN", f"{stack.name} — still failing; trying again")
+        stack.paused_until = None
+        stack.restarts.clear()
     while stack.restarts and now - stack.restarts[0] > RESTART_WINDOW:
         stack.restarts.popleft()
     if len(stack.restarts) >= MAX_RESTARTS:
-        if not stack.gave_up:
-            log("FAIL", f"{stack.name} — {MAX_RESTARTS} restarts in {RESTART_WINDOW // 60} min; "
-                f"leaving it alone (check: docker compose -f {stack.compose} logs)")
-            stack.gave_up = True
+        log("FAIL", f"{stack.name} — {MAX_RESTARTS} restarts in {RESTART_WINDOW // 60} min; "
+            f"pausing for {RESTART_WINDOW // 60} min (check: docker compose -f {stack.compose} logs)")
+        stack.paused_until = now + RESTART_WINDOW
         return
     stack.restarts.append(now)
     log("WARN", f"{stack.name} — " + ", ".join(f"{s}: {r}" for s, r in bad) + "; restarting")
@@ -438,37 +501,56 @@ def cmd_run(args):
             log("OK", f"{stack.name} up")
     if args.dry_run:
         return 0
+    dependent = [s for s in active if s.uses_storage]
+    remount_stubs(root_env, dependent)
 
     log("", f"=== Watching (every {WATCH_INTERVAL}s) ===")
-    storage_lost = False
+    storage_lost, storage_fails = False, 0
     probe_state, next_probe = {}, time.monotonic() + 60
     while sleep(WATCH_INTERVAL):
-        ok, msg = storage_ok(root_env)
-        dependent = [s for s in active if s.uses_storage]
-        if not ok:
-            if not storage_lost:
+        try:
+            ok, msg = storage_ok(root_env)
+            storage_fails = 0 if ok else storage_fails + 1
+            # One missed check is a blip, not an outage: don't stop anything for it.
+            if storage_fails >= STORAGE_FAILS and not storage_lost:
                 log("FAIL", f"{msg} — stopping " + ", ".join(s.name for s in dependent))
                 for stack in dependent:
                     stack.stop()
                 storage_lost = True
-            continue
-        if storage_lost:
-            log("OK", "storage is back — starting " + ", ".join(s.name for s in dependent))
-            for stack in dependent:
-                stack.up()
-            storage_lost = False
-            continue
+            elif ok and storage_lost:
+                log("OK", "storage is back — starting " + ", ".join(s.name for s in dependent))
+                for stack in dependent:
+                    stack.up()
+                storage_lost = False
+                continue
 
-        now = time.monotonic()
-        for stack in active:
-            if stop_event.is_set():
-                break
-            heal(stack, now)
-        if now >= next_probe:
-            run_probes(root_env, active, probe_state)
-            next_probe = now + PROBE_INTERVAL
+            # While storage is out (or flaky), keep healing everything that doesn't need it.
+            now = time.monotonic()
+            for stack in active:
+                if stop_event.is_set():
+                    break
+                if ok or not stack.uses_storage:
+                    heal(stack, now)
+            if now >= next_probe:
+                run_probes(root_env, [s for s in active if ok or not s.uses_storage], probe_state)
+                next_probe = now + PROBE_INTERVAL
+        except Exception as e:  # one bad pass must not take the watchdog down
+            log("FAIL", f"watch pass failed: {e!r}")
     log("", "stack-guard stopping (containers keep running)")
     return 0
+
+
+def remount_stubs(root_env, dependent):
+    """Restart stacks Docker auto-started before the share was mounted."""
+    storage = root_env["EXTERNAL_STORAGE"]
+    fstype = storage_fstype(storage)
+    if not fstype:
+        return
+    for stack in dependent:
+        stubs = stack.stub_mounts(storage, fstype)
+        if stubs:
+            log("WARN", f"{stack.name} started before {storage} was mounted ({', '.join(stubs)}); restarting")
+            stack.restart()
 
 
 def main():

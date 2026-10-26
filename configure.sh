@@ -335,11 +335,25 @@ on_external() { [[ $1 == "${EXTERNAL_STORAGE_V}" || $1 == "${EXTERNAL_STORAGE_V}
 if on_external "${APPDATA_ROOT_V}" && ((!EXTERNAL_MOUNTED)); then
 	warn "skipped app-state dirs under ${APPDATA_ROOT_V} — volume not mounted"
 else
-	for d in audiobookshelf/config audiobookshelf/metadata jellyfin/config jellyfin/cache \
-		home-assistant/config immich/db-data immich/ml-cache obsidian/config portainer/data; do
+	# Everything else (SQLite/Postgres state, and Portainer/HA, which run as
+	# root) stays on the internal disk next to its compose file.
+	for d in immich/library immich/ml-cache; do
 		make_dir "${APPDATA_ROOT_V}/${d}"
 	done
 	ok "app-state dirs under ${APPDATA_ROOT_V}"
+
+	# Older checkouts kept Home Assistant and Portainer state under APPDATA_ROOT.
+	if [[ -n "$(ls -A "${APPDATA_ROOT_V}/home-assistant/config" 2>/dev/null)" &&
+		-z "$(ls -A "${ROOT_DIR}/home-assistant/config" 2>/dev/null)" ]]; then
+		warn "Home Assistant config is still in ${APPDATA_ROOT_V}/home-assistant/config — move it:"
+		warn "  sudo cp -a ${APPDATA_ROOT_V}/home-assistant/config/. ${ROOT_DIR}/home-assistant/config/"
+	fi
+	if [[ -n "$(ls -A "${APPDATA_ROOT_V}/portainer/data" 2>/dev/null)" ]] &&
+		! docker volume inspect portainer_portainer_data >/dev/null 2>&1; then
+		warn "Portainer data is still in ${APPDATA_ROOT_V}/portainer/data — copy it into its volume:"
+		warn "  docker volume create portainer_portainer_data"
+		warn "  docker run --rm -v ${APPDATA_ROOT_V}/portainer/data:/from:ro -v portainer_portainer_data:/to alpine cp -a /from/. /to/"
+	fi
 fi
 
 if [[ -n ${COOLIFY_STORAGE_V} ]]; then

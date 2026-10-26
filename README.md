@@ -102,7 +102,11 @@ daemon, the storage server, a real mount on `EXTERNAL_STORAGE` (not just the aut
 and a writable `APPDATA_ROOT`, retrying every 30 s. Then every 60 s it brings back stopped or
 unhealthy containers (at most 3 restarts per stack in 10 minutes), stops the stacks that use the
 external storage if it disappears and starts them again when it returns, and probes the same ports
-as `test-services.sh`.
+as `test-services.sh`. Containers that Docker's restart policies brought up before the share was
+mounted (so they see empty stub directories) are restarted onto the real mount. A storage check
+has to fail 3 times in a row before anything is stopped, and the stacks that don't use the share
+keep being watched during an outage. It keeps running the compose file each stack was last started
+from (e.g. `portainer/compose-with-tsdproxy.yaml`).
 
 ```bash
 ./install-autostart.sh              # install + start the systemd service (asks for sudo)
