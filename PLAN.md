@@ -8,7 +8,8 @@ the compose files. Timezone default: `America/Mexico_City`.
 > **[DOCKER-INSTALL.md](./DOCKER-INSTALL.md)** (installing Docker on either OS),
 > **[REQUIREMENTS.md](./REQUIREMENTS.md)** (hardware sizing),
 > `README.md`, `configure.sh` (host config), `restart-all.sh` (bulk pull + recreate),
-> `test-services.sh` (health checks).
+> `test-services.sh` (health checks), `stack-guard.py` + `install-autostart.sh` (🐧 start at boot
+> and keep running).
 
 ## Configuration model
 
@@ -54,27 +55,29 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
 ## Service Details
 
 - **audiobookshelf/** — Port 13378 (`13378:80`). The image ignores `PUID`/`PGID`, so it takes a
-  plain `user: "${PUID}:${PGID}"` directive instead. Config/metadata in `${APPDATA_ROOT}/audiobookshelf/`.
+  plain `user: "${PUID}:${PGID}"` directive instead. Config/metadata in `./config` and `./metadata` on the
+  internal disk (its SQLite DB locks badly over NFS).
 - **papra-doc/** — Port 1221. Runs as `user: "${PUID}:${PGID}"`. Needs `AUTH_SECRET` from its
   `.env`. SQLite DB in `/opt/papra/db`, documents in `/mnt/backup/Documents/documents` (fixed Linux paths).
 - **home-assistant/** — Port 8123. `privileged: true` plus `NET_ADMIN` + `NET_RAW`.
   🐧 On Linux, uncomment `network_mode: host` for working mDNS/SSDP discovery, and the `devices:`
   block for a Zigbee/Z-Wave dongle. 🍎 On macOS neither helps — the Docker VM is NAT'd off the LAN.
 - **jellyfin/** — Port 8096 (8920 HTTPS commented out). Config and transcode cache in
-  `${APPDATA_ROOT}/jellyfin/`. 🐧 Linux can pass `/dev/dri` through for VAAPI/QSV hardware transcoding (commented
+  `./config` and `./cache` on the internal disk (SQLite over NFS locks badly). 🐧 Linux can pass `/dev/dri` through for VAAPI/QSV hardware transcoding (commented
   block + `RENDER_GID` in its `.env`), or an NVIDIA GPU via the `deploy:` block. 🍎 macOS is
   CPU-only, always.
 - **immich-photos/** — 4 containers on port 2283: `immich_server`, `immich_ml`, `immich_redis`
   (valkey 9), `immich_db` (Immich's pinned pgvector Postgres 14 image — do not swap it for stock
-  postgres). DB data and ML cache live in `${APPDATA_ROOT}/immich/`. Keep that volume APFS/ext4 —
-  Postgres on exFAT, NFS or SMB is slow and corruption-prone. 🐧 Linux with an NVIDIA GPU can use the `-cuda` ML
+  postgres). Uploads and ML cache live in `${APPDATA_ROOT}/immich/`; the Postgres data stays in
+  `./db-data` on the internal disk — Postgres on exFAT, NFS or SMB is slow and corruption-prone. 🐧 Linux with an NVIDIA GPU can use the `-cuda` ML
   image tag.
-- **portainer/** — Port 9000, mounts the Docker socket, data in `${APPDATA_ROOT}/portainer/data`.
+- **portainer/** — Port 9000, mounts the Docker socket, data in the `portainer_data` named volume (it runs as
+  root, and an NFS `APPDATA_ROOT` squashes root).
   🐧 On Linux your user must be in the `docker` group for that mount to be usable. Alternate
   `compose-with-tsdproxy.yaml` adds `tsdproxy.*` labels for a Tailscale proxy sidecar (the sidecar
   itself is not in this repo).
 - **obsidian-brain/** — LinuxServer Obsidian on 3000 (HTTP GUI) / 3001 (HTTPS). Chromium-based, so
-  `seccomp:unconfined` and `shm_size: 1gb`. Config & vaults in `${APPDATA_ROOT}/obsidian/config`. Runs as the
+  `seccomp:unconfined` and `shm_size: 1gb`. Config & vaults in `./obsidian/config` on the internal disk. Runs as the
   shared `PUID`/`PGID`, so the vault stays editable from the host on both OSes.
 - **coolify/** — 4 containers: `coolify` UI (`${APP_PORT:-8000}` → 8080), `coolify-db` (Postgres
   15), `coolify-redis` (Redis 7), `coolify-realtime` (soketi, 6001/6002), all on a dedicated
@@ -85,33 +88,36 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
 
 ## Storage Layout
 
-Nothing is stored inside the repo: every container's own state lives under `${APPDATA_ROOT}`
-(default `${EXTERNAL_STORAGE}/Storage`), so the internal disk only carries the Docker images.
+Bulk state (Immich uploads and ML cache, Coolify) lives under `${APPDATA_ROOT}` (default
+`${EXTERNAL_STORAGE}/Storage`). Anything with a SQLite/Postgres database, or that runs as root,
+stays on the internal disk next to its compose file: on this host `APPDATA_ROOT` is NFS, where
+SQLite locks badly and root is squashed.
 
 | Service        | Host path                                                                         | Container path                            | Mode    |
 | -------------- | --------------------------------------------------------------------------------- | ----------------------------------------- | ------- |
-| audiobookshelf | `${APPDATA_ROOT}/audiobookshelf/{config,metadata}`                                | `/config`, `/metadata`                    | rw      |
+| audiobookshelf | `./config`, `./metadata`                                                          | `/config`, `/metadata`                    | rw      |
 | audiobookshelf | `${MEDIA_ROOT}/Audio`                                                             | `/audiobooks`                             | rw      |
 | audiobookshelf | `${MEDIA_ROOT}/Documents`                                                         | `/books`                                  | rw      |
 | audiobookshelf | `${EXTERNAL_STORAGE}/Audio`                                                       | `/audiobooks-external`                    | rw      |
 | audiobookshelf | `${EXTERNAL_STORAGE}/Documents`                                                   | `/books-external`                         | rw      |
-| jellyfin       | `${APPDATA_ROOT}/jellyfin/{config,cache}`                                         | `/config`, `/cache`                       | rw      |
+| jellyfin       | `./config`, `./cache`                                                             | `/config`, `/cache`                       | rw      |
 | jellyfin       | `${MEDIA_ROOT}/Videos`                                                            | `/data/videos`                            | rw      |
 | jellyfin       | `${EXTERNAL_STORAGE}/Videos`                                                      | `/data/videos-external`                   | rw      |
 | immich         | `${EXTERNAL_STORAGE}/Images`                                                      | `/mnt/external-data`                      | rw      |
 | immich         | `${MEDIA_ROOT}/Images`                                                            | `/mnt/external-library`                   | **ro**  |
-| immich         | `${APPDATA_ROOT}/immich/{db-data,ml-cache}`                                       | postgres data, `/cache`                   | rw      |
+| immich         | `${APPDATA_ROOT}/immich/{library,ml-cache}`                                       | `/data`, `/cache`                         | rw      |
+| immich         | `./db-data`                                                                       | postgres data                             | rw      |
 | papra          | `/opt/papra/db`                                                                   | `/app/app-data/db`                        | rw      |
 | papra          | `/mnt/backup/Documents/documents`                                                 | `/app/app-data/documents`                 | rw      |
-| home-assistant | `${APPDATA_ROOT}/home-assistant/config`, `./run/dbus`                             | `/config`, `/run/dbus`                    | rw / ro |
-| obsidian       | `${APPDATA_ROOT}/obsidian/config`                                                 | `/config`                                 | rw      |
+| home-assistant | `./config`, `./run/dbus`                                                          | `/config`, `/run/dbus`                    | rw / ro |
+| obsidian       | `./obsidian/config`                                                               | `/config`                                 | rw      |
 | coolify        | `${COOLIFY_STORAGE}/{ssh,applications,databases,services,backups,postgres,redis}` | various under `/var/www/html/storage/app` | rw      |
-| portainer      | `/var/run/docker.sock`, `${APPDATA_ROOT}/portainer/data`                          | socket, `/data`                           | rw      |
+| portainer      | `/var/run/docker.sock`, `portainer_data` volume                                   | socket, `/data`                           | rw      |
 
 **Summary:** local media lives under `${MEDIA_ROOT}/{Audio,Videos,Images,Documents}`; the external
-volume mirrors those four and additionally holds every app's state under `${APPDATA_ROOT}`
+volume mirrors those four and additionally holds the bulk state under `${APPDATA_ROOT}`
 (Coolify's under `${COOLIFY_STORAGE}`, which defaults to `${APPDATA_ROOT}/coolify`).
-`restart-all.sh` refuses to start while `EXTERNAL_STORAGE` is unmounted.
+`restart-all.sh` and `stack-guard.py` refuse to start while `EXTERNAL_STORAGE` is unmounted.
 
 🐧 On Linux, `${APPDATA_ROOT}` and `${COOLIFY_STORAGE}` are best pointed at a **local** disk
 (e.g. `/data/homelab`, `/data/coolify`) when the external storage is a NAS — Postgres over NFS/SMB is slow and prone to corruption.

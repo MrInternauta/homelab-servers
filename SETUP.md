@@ -76,7 +76,7 @@ Then clone the repo and make the scripts executable:
 
 ```bash
 cd ~/Documents/projects/homelab-servers   # or wherever you cloned this
-chmod +x configure.sh restart-all.sh test-services.sh
+chmod +x configure.sh restart-all.sh test-services.sh stack-guard.py install-autostart.sh
 ```
 
 **Check:** `docker ps` prints a header row without error.
@@ -300,7 +300,7 @@ docker compose -f obsidian-brain/docker-compose.yml up -d
 open http://localhost:3000
 ```
 
-A full Obsidian GUI in the browser, not an API. Vaults go under `APPDATA_ROOT/obsidian/config`. It runs as
+A full Obsidian GUI in the browser, not an API. Vaults go under `obsidian-brain/obsidian/config`. It runs as
 your `PUID`/`PGID`, so the vault stays editable from the host on both OSes.
 
 ### 5.6 Papra — port 1221
@@ -456,7 +456,17 @@ Portainer config).
 `./configure.sh`, then `./restart-all.sh`.
 
 🐧 **Reboot survival on Linux:** `restart: unless-stopped` only helps if the daemon starts.
-`sudo systemctl enable docker` once, and confirm with `systemctl is-enabled docker`.
+`sudo systemctl enable docker` once, and confirm with `systemctl is-enabled docker`. Then
+install the stack guard so nothing starts before the NAS is mounted, and stopped stacks come back:
+
+```bash
+./install-autostart.sh                  # systemd service homelab-stack-guard (asks for sudo)
+./stack-guard.py status
+journalctl -u homelab-stack-guard -f
+```
+
+List stacks it should leave alone in `STACK_GUARD_SKIP` in the root `.env`. It brings back a
+stack you `down` by hand within a minute, so add it there first.
 
 ---
 
