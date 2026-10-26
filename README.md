@@ -95,6 +95,27 @@ SERVICE_HOST=100.105.40.95 ./test-services.sh   # probe over Tailscale instead o
 The probe target comes from `SERVICE_HOST` in the root `.env`, default `127.0.0.1`. The Tailscale
 section is skipped cleanly if Tailscale is not installed.
 
+### `stack-guard.py` + `install-autostart.sh` (🐧 Linux)
+
+Starts every stack at boot and keeps it running. Before starting anything it waits for the Docker
+daemon, the storage server, a real mount on `EXTERNAL_STORAGE` (not just the automount placeholder)
+and a writable `APPDATA_ROOT`, retrying every 30 s. Then every 60 s it brings back stopped or
+unhealthy containers (at most 3 restarts per stack in 10 minutes), stops the stacks that use the
+external storage if it disappears and starts them again when it returns, and probes the same ports
+as `test-services.sh`.
+
+```bash
+./install-autostart.sh              # install + start the systemd service (asks for sudo)
+./install-autostart.sh --uninstall  # remove it; containers keep running
+./stack-guard.py check              # run the requirement checks once
+./stack-guard.py status             # one line per stack
+journalctl -u homelab-stack-guard -f
+```
+
+It doesn't pull images at boot (`./stack-guard.py run --pull` does). Stacks listed in
+`STACK_GUARD_SKIP` in the root `.env` are left alone. A stack you stop by hand comes back within a
+minute, so add it there (or `sudo systemctl stop homelab-stack-guard`) to keep it down.
+
 ## Requirements
 
 - Docker Engine with the **`docker compose` v2 plugin** — see
@@ -104,4 +125,4 @@ section is skipped cleanly if Tailscale is not installed.
 - 🐧 Linux: your user in the `docker` group, and `sudo systemctl enable --now docker`
 - 🍎 macOS: Docker Desktop running, with your home directory and `/Volumes` in its file-sharing list
 
-Scripts must be executable: `chmod +x configure.sh restart-all.sh test-services.sh`
+Scripts must be executable: `chmod +x configure.sh restart-all.sh test-services.sh stack-guard.py install-autostart.sh`

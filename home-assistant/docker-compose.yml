@@ -18,7 +18,10 @@ services:
       - NET_ADMIN
       - NET_RAW
     volumes:
-      - ${APPDATA_ROOT:?set APPDATA_ROOT in .env — run ./configure.sh}/home-assistant/config:/config
+      # Config stays on the internal disk: HA runs as root and its SQLite DB
+      # locks badly over NFS, which is what APPDATA_ROOT is on this host (and
+      # NFS squashes root, so it can't write there at all).
+      - ./config:/config
       - ./run/dbus:/run/dbus:ro
       # Linux: the host's own D-Bus, for Bluetooth and systemd integrations.
       # Swap the line above for this one on a Linux host that has it:
