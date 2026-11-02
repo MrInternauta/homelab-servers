@@ -448,8 +448,8 @@ http://<your-machine>.<your-tailnet>.ts.net:<port>
 | 3080 | AdGuard Home   |     | 13378 | Audiobookshelf |
 | 53   | DNS (AdGuard)  |     |       |                |
 
-🐧 **Linux firewall.** Unlike macOS, most Linux distros ship a firewall that is on. Open the ports
-for the tailnet only — never `0.0.0.0`:
+🐧 **Linux firewall.** Unlike macOS, most Linux distros ship a firewall that is on. Allow the
+tailnet interface:
 
 ```bash
 # ufw (Debian/Ubuntu)
@@ -460,6 +460,11 @@ sudo ufw reload
 sudo firewall-cmd --permanent --zone=trusted --add-interface=tailscale0
 sudo firewall-cmd --reload
 ```
+
+This only governs what runs on the host itself (SSH, rpcbind, Tailscale). **Container ports bypass
+ufw/firewalld** — Docker publishes them on every address, public IPv6 included — so the router is
+what keeps them off the internet. Check that it does: see
+[PLAN.md § Public exposure](./PLAN.md#public-exposure).
 
 If `test-services.sh` reports `[RELAY]`, traffic is going through a DERP relay instead of a direct
 connection — it works but is slow and drops long-lived sessions. The fix is a UDP 41641 port

@@ -185,12 +185,18 @@ http://<machine>.<tailnet>.ts.net:<port>
 Tailscale IP or MagicDNS name to test remote reachability instead of just local binding.
 
 🐧 **Linux firewalls.** macOS ships with its firewall off by default; most Linux distros do not.
-Allow the tailnet interface rather than opening ports to the world:
+Allow the tailnet interface:
 
 ```bash
 sudo ufw allow in on tailscale0                                    # Debian/Ubuntu
 sudo firewall-cmd --permanent --zone=trusted --add-interface=tailscale0 && sudo firewall-cmd --reload   # Fedora/RHEL
 ```
+
+**ufw/firewalld only cover services that run on the host itself** — SSH (22), rpcbind (111),
+Tailscale (41641). Every port a container publishes goes through Docker's own iptables rules, which
+run first, so all the service ports are open on **every** host address — LAN, tailnet, and a public
+IPv6 one — whatever ufw says. What keeps them off the internet is the router; see
+[Public exposure](#public-exposure).
 
 Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` that adds
 `tsdproxy.enable` / `tsdproxy.ephemeral` labels for a Tailscale proxy sidecar.
@@ -212,6 +218,38 @@ Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` t
 | 8123  | Home Assistant             |
 | 9000  | Portainer                  |
 | 13378 | Audiobookshelf             |
+
+### Public exposure
+
+Every port above is published on all host addresses (see Linux firewalls above), so the only
+thing between the services and the internet is the router. **Checked 2026-11-02, behind the stock
+Starlink router:**
+
+| Path | Result | Why |
+| ---- | ------ | --- |
+| **IPv4** | Not reachable | Starlink CGNAT (shared public IPv4) and no port forwarding or UPnP; `tailscale netcheck` shows `PortMapping:` empty |
+| **IPv6** | Not reachable | External scan ([IPscan](https://ipv6.chappell-family.com/ipv6tcptest/)) of the host's public `2605:59c8:…` address: all 91 tested ports **stealth** — UDP 53 + 18 others; TCP 22, 53, 111, 3000, 3080, 8123, 9000 + ~65 common ports. Those services are listening, so the router is dropping inbound IPv6 |
+
+Not individually tested: 1221, 2283, 3001, 8096, 13378 (the scanner allows four custom ports).
+Given the router dropped every port, including ones with a listener behind them, they are almost
+certainly blocked the same way.
+
+**Re-run the check** after changing the router, enabling Starlink bypass mode, or changing ISP. It
+must run **on the server** (IPscan scans whoever calls it), and running it means accepting IPscan's
+terms. Swap the four custom ports to cover others:
+
+```bash
+H=www66.chappell-family.co.uk
+U="https://$H/cgi-bin6/ipscanfasttxt.cgi"
+Q='includeexisting=1&customport0=9000'
+Q="$Q&customport1=8123&customport2=3000"
+Q="$Q&customport3=3080&termsaccepted=1"
+curl -6 -s -m 120 "$U?$Q" | sed 's/<[^>]*>/ /g' | grep -oE 'Port [0-9]+(\[[0-9]\])? = [A-Z]+'
+```
+
+Anything other than `TCPSTEALTH`/`UDPSTEALTH` means that port is reachable from the internet. Then
+drop inbound IPv6 for the service ports in Docker's `DOCKER-USER` chain (ufw rules won't apply), or
+publish them on the LAN/tailnet addresses only.
 
 ## Network-wide DNS / ad blocking
 
@@ -331,7 +369,8 @@ docker compose -f <service-dir>/docker-compose.yml up -d --remove-orphans
   `1000:1000`. They come from `id -u` / `id -g` via `configure.sh`. Get them wrong and every file
   the containers write is owned by a user that does not exist on the host.
 - 🐧 **Linux firewall and the `docker` group** are the two things macOS does not make you think
-  about. `sudo usermod -aG docker $USER` and allow `tailscale0`.
+  about. `sudo usermod -aG docker $USER` and allow `tailscale0`. ufw does **not** filter the
+  container ports — Docker bypasses it; see [Public exposure](#public-exposure).
 - 🐧 **`sudo systemctl enable docker`** — `restart: unless-stopped` is meaningless if the daemon
   never starts at boot.
 - `immich-photos` upgrades may require **DB migrations** — watch `immich_db` logs after a pull.
