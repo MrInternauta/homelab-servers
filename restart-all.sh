@@ -30,6 +30,7 @@ for arg in "$@"; do
 done
 
 SERVICES=(
+	"adguard-home"
 	"audiobookshelf"
 	"coolify"
 	"papra-doc"

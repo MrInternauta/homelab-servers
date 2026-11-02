@@ -30,6 +30,7 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Same order as restart-all.sh.
 STACKS = [
+    "adguard-home",
     "audiobookshelf",
     "coolify",
     "papra-doc",
@@ -50,6 +51,7 @@ PROBES = [
     ("audiobookshelf", "audiobookshelf", 13378),
     ("obsidian-brain", "obsidian", 3000),
     ("coolify", "coolify", 8000),
+    ("adguard-home", "adguard", 3080),
 ]
 # A login redirect or a 401 still proves the service is listening.
 PROBE_OK = {200, 301, 302, 400, 401, 403}

@@ -17,6 +17,8 @@ immich-photos/db-data/
 immich-photos/ml-cache/
 papra-doc/app-data/
 papra-doc/db/
+adguard-home/work/
+adguard-home/conf/
 
 # ── macOS ──────────────────────────────────────────────────────────────
 .DS_Store
