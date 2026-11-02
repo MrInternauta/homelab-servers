@@ -240,6 +240,30 @@ AdGuard Home only blocks ads for devices that use it as their DNS server. Two pl
   removes the single point of failure.
 - **A site breaks?** Query Log → find the blocked domain → *Unblock*. That adds an allowlist rule.
 
+### Behind a Starlink router
+
+The stock Starlink router does not let you change the DNS server it hands out — it always gives
+clients itself (`192.168.1.1`, plus an IPv6 `fd…::1` address), and its DHCP can't be turned off.
+So the router row in the table above isn't available. In order of preference:
+
+| Option                               | How                                                                                                                  | Covers                                  |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| **Tailscale DNS** (recommended)      | The Tailscale row above. Override local DNS applies on the home Wi-Fi too                                            | Every device that runs Tailscale        |
+| **Manual DNS per device**            | In the device's network settings: IPv4 DNS = host's LAN IP, IPv6 DNS = host's ULA (see below). Set **both**          | TVs, consoles, anything without Tailscale |
+| **Own router behind Starlink**       | Starlink app → Router → *Bypass mode* (or the Starlink Ethernet adapter), then set DNS on your router as in the table above | The whole LAN — the only true network-wide option |
+
+- **Set the IPv6 DNS too.** The Starlink router advertises its own IPv6 DNS server; a device with
+  only the IPv4 DNS changed will keep asking Starlink over IPv6 and ads get through. Use the host's
+  ULA (the `fd…` address), not its `2605:59c8:…` address — Starlink's public IPv6 prefix can change.
+  🐧 Find it with `ip -6 addr show scope global | grep -o 'fd[0-9a-f:]*'`. AdGuard Home already
+  listens on IPv6 (`[::]:53`).
+- **Firewall (🐧):** allow the IPv6 LAN as well as the IPv4 one:
+  `sudo ufw allow from fd99:acd9:1c4f:8::/64 to any port 53` (use your own `/64`).
+- **Don't turn on AdGuard Home's DHCP server.** Starlink's DHCP keeps running, and two DHCP
+  servers on one LAN hand out conflicting leases.
+- **Bypass mode turns off Starlink's Wi-Fi** — your own router must provide it. Only worth it
+  when the manual-DNS list gets long.
+
 ## Common Tasks
 
 **Configure or re-configure the host** (after a fresh clone, or after moving storage):
@@ -351,6 +375,10 @@ Add a port forwarding rule in your router admin panel:
 | Internal port | 41641                                                              |
 
 This lets Tailscale establish direct P2P connections instead of going through DERP.
+
+> **Starlink:** this fix isn't available. Starlink puts you behind carrier-grade NAT (no public
+> IPv4) and its router has no port forwarding. Tailscale still works, just more often over DERP;
+> peers that also have IPv6 can usually connect directly over Starlink's native IPv6.
 
 ### Verify After Fix
 

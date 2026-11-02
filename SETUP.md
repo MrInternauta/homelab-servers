@@ -473,7 +473,8 @@ forward on your router; see
 
 AdGuard Home (5.9) only filters devices that use it for DNS. Hand it out in two places:
 
-1. **Home LAN — your router.** In its DHCP / LAN settings set the DNS server to the host's LAN IP
+1. **Home LAN — your router.** (Starlink router? It can't do this — skip to
+   [Behind a Starlink router](#behind-a-starlink-router).) In its DHCP / LAN settings set the DNS server to the host's LAN IP
    (🐧 `hostname -I | awk '{print $1}'` · 🍎 `ipconfig getifaddr en0`) and leave the secondary
    **empty** — a public secondary lets ads straight through. Devices pick it up when their DHCP
    lease renews; reconnect Wi-Fi to force it.
@@ -488,6 +489,30 @@ AdGuard Home (5.9) only filters devices that use it for DNS. Hand it out in two 
 sudo ufw allow from 192.168.1.0/24 to any port 53       # use your own subnet
 # firewalld: sudo firewall-cmd --permanent --add-service=dns && sudo firewall-cmd --reload
 ```
+
+### Behind a Starlink router
+
+The stock Starlink router won't let you change the DNS it hands out, so item 1 above is
+unavailable. Use Tailscale (item 2) on every device that can run it, and set DNS **by hand** on
+the rest (TV, console):
+
+```bash
+hostname -I | awk '{print $1}'                          # IPv4 DNS → e.g. 192.168.1.224
+ip -6 addr show scope global | grep -o 'fd[0-9a-f:]*'   # IPv6 DNS → the host's fd… address
+```
+
+Set **both** on each device — with only IPv4 changed, it keeps asking the Starlink router over
+IPv6 and ads get through. Use the `fd…` address, not the `2605:59c8:…` one (Starlink can change
+that prefix). Then let the IPv6 LAN through the firewall too:
+
+```bash
+sudo ufw allow from fd99:acd9:1c4f:8::/64 to any port 53    # use your own /64
+```
+
+For true network-wide blocking, put your own router behind Starlink (Starlink app → Router →
+*Bypass mode*, which also turns off Starlink's Wi-Fi) and do item 1 on that router. Don't enable
+AdGuard Home's DHCP server instead — Starlink's DHCP can't be switched off. Details:
+[PLAN.md § Behind a Starlink router](./PLAN.md#behind-a-starlink-router).
 
 **Check it** from another device: browse a little, then AdGuard Home → Query Log should show that
 device's queries, and Dashboard → *Blocked by filters* should climb.
@@ -595,5 +620,6 @@ paths they did before.
 | AdGuard Home: `bind: address already in use` (53) | 🐧   | `systemd-resolved`'s stub listener holds port 53                              | Step 5.9 — `DNSStubListener=no`                                                              |
 | AdGuard Home UI unreachable after the wizard      | both | Admin port in the wizard set to something other than 3000                     | Set `http.address: 0.0.0.0:3000` in `adguard-home/conf/AdGuardHome.yaml`, restart the stack  |
 | No ads blocked on a device                        | both | The device still uses another DNS server (router secondary, VPN, Private DNS) | Step 8; on Android turn off *Private DNS*; in browsers turn off *Secure DNS*                 |
+| Ads still show with manual DNS on Starlink        | both | Only IPv4 DNS set; the device asks the Starlink router over IPv6              | Also set the IPv6 DNS to the host's `fd…` address (Step 8 § Behind a Starlink router)        |
 | `*.ts.net` names stop resolving                   | both | AdGuard Home sends them to the public upstreams                               | Add upstream `[/ts.net/]100.100.100.100`                                                     |
 | Whole network has no internet, Wi-Fi still up     | both | AdGuard Home (or the host) is down, so DNS is down                            | `docker compose -f adguard-home/docker-compose.yml up -d`, or roll back Step 8               |
