@@ -1,6 +1,6 @@
 # Hardware Requirements — Sizing the Host
 
-Approximate resource requirements for running all 8 stacks (**14 containers**) in this repo on a
+Approximate resource requirements for running all 9 stacks (**15 containers**) in this repo on a
 single machine, on **macOS (Docker Desktop / Colima)** or **Linux (Docker Engine)**.
 
 > Companion docs: **[SETUP.md](./SETUP.md)** (bring-up),
@@ -23,7 +23,8 @@ host. Whole-machine totals are in [Machine totals](#machine-totals).
 | **audiobookshelf** | 1                                | ~200 MB     | 600 MB–1 GB (scan) | 0.5 core during library scan      |
 | **papra-doc**      | 1                                | ~200 MB     | ~700 MB (OCR)      | 1 core during OCR                 |
 | **portainer**      | 1                                | ~60 MB      | ~100 MB            | negligible                        |
-| **Total**          | **14**                           | **~5.5 GB** | **10–14 GB**       | —                                 |
+| **adguard-home**   | 1                                | ~50 MB      | ~150 MB            | negligible                        |
+| **Total**          | **15**                           | **~5.5 GB** | **10–14 GB**       | —                                 |
 
 The two workloads that actually saturate the machine are Immich's ML pass (CLIP embeddings + face
 detection across the whole library) and Jellyfin transcoding. Everything else is close to free.

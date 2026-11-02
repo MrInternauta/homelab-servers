@@ -231,3 +231,4 @@ All four clean? Go to **[SETUP.md](./SETUP.md)**.
 | Containers do not come back after a reboot                              | macOS | Docker Desktop → Settings → General → "Start Docker Desktop when you log in"                                                            |
 | `no matching manifest for linux/arm64`                                  | macOS | An amd64-only image on Apple silicon. It will run under emulation; check with `docker image inspect <img> --format '{{.Architecture}}'` |
 | Port already in use                                                     | both  | macOS: `lsof -i :<port>` · Linux: `sudo ss -lptn "sport = :<port>"`                                                                     |
+| Port 53 already in use (AdGuard Home)                                   | Linux | `systemd-resolved`'s stub listener — set `DNSStubListener=no`, see [SETUP.md § 5.9](./SETUP.md#59-adguard-home--port-3080-dns-on-53)    |

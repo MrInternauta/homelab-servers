@@ -49,8 +49,9 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
 | Portainer      | `portainer/`      | 9000             | `portainer/portainer-ce:lts`                   | Docker management UI                    |
 | Obsidian       | `obsidian-brain/` | 3000 / 3001      | `lscr.io/linuxserver/obsidian`                 | Obsidian vault (web GUI, Chromium)      |
 | Coolify        | `coolify/`        | 8000, 6001, 6002 | `coollabsio/coolify`                           | Self-hosted PaaS (4 containers)         |
+| AdGuard Home   | `adguard-home/`   | 53 (DNS), 3080   | `adguard/adguardhome`                          | Network-wide DNS ad blocker             |
 
-**14 containers** across 8 stacks.
+**15 containers** across 9 stacks.
 
 ## Service Details
 
@@ -87,6 +88,16 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
   🐧 **Linux is where Coolify actually works** — uncomment the Docker socket mount and it can
   deploy to the host. 🍎 On macOS it runs but cannot manage the Mac; it is a dashboard only.
 
+- **adguard-home/** — DNS on port 53 (TCP + UDP), web UI on 3080 (`3080:3000` — the host's 3000
+  is Obsidian, so keep the admin listener at 3000 in the setup wizard). Image tag pinned with
+  `ADGUARD_VERSION` in its `.env`. State in `./work` and `./conf` on the internal disk, never on the
+  NAS: DNS has to keep answering while the share is down, and since the stack mounts nothing from
+  `EXTERNAL_STORAGE`, stack-guard leaves it running during a storage outage. DoT (853) and DoH
+  (`8443:443`) are commented out until encryption is set up in its UI.
+  🐧 Needs `systemd-resolved`'s stub listener turned off to free port 53 (SETUP.md § 5.9). Behind
+  Docker's NAT every client shows up as the bridge gateway; `network_mode: host` (commented block)
+  shows real client IPs. See [Network-wide DNS / ad blocking](#network-wide-dns--ad-blocking).
+
 ## Storage Layout
 
 Bulk state (Immich uploads and ML cache, Coolify) lives under `${APPDATA_ROOT}` (default
@@ -114,6 +125,7 @@ SQLite locks badly and root is squashed.
 | obsidian       | `./obsidian/config`                                                               | `/config`                                 | rw      |
 | coolify        | `${COOLIFY_STORAGE}/{ssh,applications,databases,services,backups,postgres,redis}` | various under `/var/www/html/storage/app` | rw      |
 | portainer      | `/var/run/docker.sock`, `portainer_data` volume                                   | socket, `/data`                           | rw      |
+| adguard-home   | `./work`, `./conf`                                                                | `/opt/adguardhome/{work,conf}`            | rw      |
 
 **Summary:** local media lives under `${MEDIA_ROOT}/{Audio,Videos,Images,Documents}`; the external
 volume mirrors those four and additionally holds the bulk state under `${APPDATA_ROOT}`
@@ -136,6 +148,7 @@ Every service reads the `.env` next to its compose file, and every service ships
 | `home-assistant/` | `TZ`                                                                                                             | No secrets — HA keeps its own inside `./config` |
 | `obsidian-brain/` | `TZ`, `PUID`, `PGID`                                                                                             | No secrets                                      |
 | `portainer/`      | `TZ`                                                                                                             | No secrets — admin account lives in the volume  |
+| `adguard-home/`   | `TZ`, `ADGUARD_VERSION`                                                                                          | No secrets — admin account lives in `./conf`    |
 | `papra-doc/`      | `AUTH_SECRET`, `TZ`, `PUID`, `PGID`, `MEDIA_ROOT`, `EXTERNAL_STORAGE`                                            | Also loaded into the container via `env_file:`  |
 | `immich-photos/`  | `IMMICH_VERSION`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE_NAME`, `TZ`, `MEDIA_ROOT`, `EXTERNAL_STORAGE`       | Loaded via `env_file:`                          |
 | `coolify/`        | `APP_*`, `DB_*`, `REDIS_PASSWORD`, `PUSHER_APP_*`, `SOKETI_*`, `COOLIFY_STORAGE`, `REGISTRY_URL`, `LATEST_IMAGE` | Loaded via `env_file:`                          |
@@ -185,10 +198,12 @@ Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` t
 
 | Port  | Service                    |
 | ----- | -------------------------- |
+| 53    | AdGuard Home (DNS)         |
 | 1221  | Papra                      |
 | 2283  | Immich                     |
 | 3000  | Obsidian (HTTP GUI)        |
 | 3001  | Obsidian (HTTPS GUI)       |
+| 3080  | AdGuard Home (web UI)      |
 | 6001  | Coolify realtime (soketi)  |
 | 6002  | Coolify realtime (metrics) |
 | 8000  | Coolify UI                 |
@@ -196,6 +211,34 @@ Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` t
 | 8123  | Home Assistant             |
 | 9000  | Portainer                  |
 | 13378 | Audiobookshelf             |
+
+## Network-wide DNS / ad blocking
+
+AdGuard Home only blocks ads for devices that use it as their DNS server. Two places hand that out:
+
+| Where                                        | Set                                                         | Covers                         |
+| -------------------------------------------- | ----------------------------------------------------------- | ------------------------------ |
+| Router → DHCP / LAN settings → DNS server    | The host's LAN IP (🐧 `hostname -I`), and **no** secondary  | Every device on the home LAN   |
+| Tailscale admin console → DNS → Nameservers  | The host's Tailscale IP, with **Override local DNS** on     | Every tailnet device, anywhere |
+
+- **No public secondary DNS.** Clients use the secondary whenever they like, not only as a
+  fallback, so ads leak through it.
+- **Keep MagicDNS working.** In Settings → DNS settings → Upstream DNS servers add
+  `[/ts.net/]100.100.100.100`, so tailnet names are still resolved by Tailscale.
+- **The server must not use itself for DNS.** With Override local DNS on, the host would also send
+  its own lookups through AdGuard Home — and when that container is down it couldn't even pull an
+  image to fix it. On the server only: `sudo tailscale set --accept-dns=false`.
+- **Upstreams:** use encrypted ones, e.g. `https://dns.quad9.net/dns-query` and
+  `https://cloudflare-dns.com/dns-query`.
+- **Blocklists:** the default *AdGuard DNS filter* plus *OISD Big* (Filters → DNS blocklists →
+  Add blocklist → Choose from the list) cover most ads and trackers with few false positives.
+- **Firewall (🐧):** `tailscale0` is already trusted; the LAN needs port 53 too:
+  `sudo ufw allow from 192.168.1.0/24 to any port 53` (use your own subnet).
+- **Single point of failure.** If this host is down, every client loses DNS — not just ad
+  blocking. **Rollback:** set the router's DNS back to automatic and turn off the Tailscale
+  nameserver override. A second AdGuard Home on another machine (synced with `adguardhome-sync`)
+  removes the single point of failure.
+- **A site breaks?** Query Log → find the blocked domain → *Unblock*. That adds an allowlist rule.
 
 ## Common Tasks
 
@@ -211,7 +254,7 @@ Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` t
 ./restart-all.sh            # --no-pull to skip pulling, --no-test to skip the health check
 ```
 
-It iterates `audiobookshelf → coolify → papra-doc → home-assistant → jellyfin → immich-photos →
+It iterates `adguard-home → audiobookshelf → coolify → papra-doc → home-assistant → jellyfin → immich-photos →
 portainer → obsidian-brain`, skips any directory with no compose file or no `.env`, finishes by
 invoking `test-services.sh`, and exits non-zero if any stack failed.
 
@@ -256,6 +299,12 @@ docker compose -f <service-dir>/docker-compose.yml up -d --remove-orphans
   Pin `IMMICH_VERSION` in its `.env` if you want to control when that happens.
 - `coolify`'s UI waits on Postgres/Redis/soketi healthchecks; slow storage makes first start take a
   while. Check `docker compose -f coolify/docker-compose.yml ps` before assuming it failed.
+- **`adguard-home` and port 53** (🐧): `systemd-resolved` listens on `127.0.0.53:53`, so Docker
+  can't publish `0.0.0.0:53` until its stub listener is off (SETUP.md § 5.9). A `bind: address
+  already in use` on `adguard-home` means that step was skipped or undone.
+- **DNS outages are network outages.** When AdGuard Home is down every client that uses it stops
+  resolving names. Bring it back first, or roll back the router/Tailscale DNS (see
+  [Network-wide DNS / ad blocking](#network-wide-dns--ad-blocking)).
 - `home-assistant` runs privileged with `NET_ADMIN`/`NET_RAW` — treat its config directory as
   security-sensitive.
 - `restart-all.sh` is the source of truth for which services exist and in what order they restart;

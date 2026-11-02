@@ -226,6 +226,7 @@ Everything runs with defaults. These are the knobs worth turning on each OS.
 | **Immich ML on GPU**              | `immich-photos/docker-compose.yml`     | Use the `-cuda` image tag and uncomment `deploy:` — imports go from hours to minutes     |
 | **Coolify manages the host**      | `coolify/docker-compose.yml`           | Uncomment the `/var/run/docker.sock` mount — this is the whole point of Coolify          |
 | **Coolify storage on local disk** | `coolify/.env` → `COOLIFY_STORAGE`     | Postgres on NFS/SMB is slow and corruption-prone. Point it at e.g. `/data/coolify`       |
+| **AdGuard Home client IPs**       | `adguard-home/docker-compose.yml`      | Uncomment `network_mode: host` — per-client stats and rules then see real IPs            |
 
 Driver prerequisites for the GPU rows are in
 [DOCKER-INSTALL.md § Optional Linux extras](./DOCKER-INSTALL.md#optional-linux-extras).
@@ -351,12 +352,54 @@ takes a couple of minutes — normal, not a failure. Check `ps` before debugging
 🍎 On macOS it installs and the UI works, but it cannot manage the Mac itself — it expects to SSH
 into a Linux host, and the daemon lives inside a VM. Treat it as a dashboard, not a deploy target.
 
+### 5.9 AdGuard Home — port 3080 (DNS on 53)
+
+🐧 **Free port 53 first.** `systemd-resolved` holds it on `127.0.0.53`, so Docker can't publish it.
+Turn off the stub listener and point the host at resolved's real upstream list instead (one-time):
+
+```bash
+sudo ss -lunp 'sport = :53'          # shows systemd-resolved if this step is needed
+sudo mkdir -p /etc/systemd/resolved.conf.d
+printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/adguard.conf
+sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+sudo systemctl restart systemd-resolved
+getent hosts example.com             # the host itself must still resolve
+```
+
+To undo: `sudo rm /etc/systemd/resolved.conf.d/adguard.conf`,
+`sudo ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf`, restart resolved.
+🍎 macOS needs none of this.
+
+```bash
+docker compose -f adguard-home/docker-compose.yml up -d
+open http://localhost:3080
+```
+
+The setup wizard runs on first start:
+
+1. **Admin web interface:** listen on *All interfaces*, port **3000** — that is the container
+   side of `3080:3000`. Pick anything else and the UI becomes unreachable until you edit
+   `adguard-home/conf/AdGuardHome.yaml`.
+2. **DNS server:** *All interfaces*, port **53**.
+3. Create the admin account (it lives in `./conf`, not in `.env`).
+
+Then in the UI: Settings → DNS settings → set encrypted upstreams and add
+`[/ts.net/]100.100.100.100`; Filters → DNS blocklists → add *OISD Big*. Check it from the host:
+
+```bash
+dig @127.0.0.1 example.com +short        # a real IP
+dig @127.0.0.1 doubleclick.net +short    # 0.0.0.0 — blocked
+```
+
+Nothing is blocked for the rest of the network yet — clients still use the router's DNS. Pointing
+them here is Step 8.
+
 ---
 
 ## Step 6 — Verify everything
 
 ```bash
-docker ps                 # 14 containers across the 8 stacks
+docker ps                 # 15 containers across the 9 stacks
 ./test-services.sh
 ```
 
@@ -368,7 +411,8 @@ peer is `[DIRECT]` or `[RELAY]`. It probes `SERVICE_HOST` from the root `.env` (
 SERVICE_HOST=100.105.40.95 ./test-services.sh
 ```
 
-**A healthy run** shows `[OK]` for all 8 services. Codes `200`, `301`, `302`, `400`, `401` and
+**A healthy run** shows `[OK]` for all 9 services, plus a DNS section where `example.com` resolves
+and `doubleclick.net` is `blocked` (a `[WARN]` there only means no blocklist covers it yet). Codes `200`, `301`, `302`, `400`, `401` and
 `403` all count as OK — a login redirect still proves the service is listening. If Tailscale is
 not installed, that section is skipped rather than failing.
 
@@ -402,7 +446,8 @@ http://<your-machine>.<your-tailnet>.ts.net:<port>
 | 2283 | Immich         |     | 8096  | Jellyfin       |
 | 3000 | Obsidian       |     | 8123  | Home Assistant |
 | 6001 | Coolify soketi |     | 9000  | Portainer      |
-|      |                |     | 13378 | Audiobookshelf |
+| 3080 | AdGuard Home   |     | 13378 | Audiobookshelf |
+| 53   | DNS (AdGuard)  |     |       |                |
 
 🐧 **Linux firewall.** Unlike macOS, most Linux distros ship a firewall that is on. Open the ports
 for the tailnet only — never `0.0.0.0`:
@@ -421,6 +466,34 @@ If `test-services.sh` reports `[RELAY]`, traffic is going through a DERP relay i
 connection — it works but is slow and drops long-lived sessions. The fix is a UDP 41641 port
 forward on your router; see
 [PLAN.md § Troubleshooting](./PLAN.md#troubleshooting-services-not-reachable-from-tailscale-peers).
+
+---
+
+## Step 8 — Block ads for the whole network
+
+AdGuard Home (5.9) only filters devices that use it for DNS. Hand it out in two places:
+
+1. **Home LAN — your router.** In its DHCP / LAN settings set the DNS server to the host's LAN IP
+   (🐧 `hostname -I | awk '{print $1}'` · 🍎 `ipconfig getifaddr en0`) and leave the secondary
+   **empty** — a public secondary lets ads straight through. Devices pick it up when their DHCP
+   lease renews; reconnect Wi-Fi to force it.
+2. **Tailscale — anywhere.** Admin console → DNS → Nameservers → Add nameserver → Custom → the
+   host's Tailscale IP (`tailscale ip -4`), and turn on **Override local DNS**. Phones and laptops
+   on the tailnet are then filtered on any network. On **the server itself** run
+   `sudo tailscale set --accept-dns=false`, so the host never depends on its own container for DNS.
+
+🐧 Let the LAN reach port 53 (the tailnet is already allowed by Step 7):
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 53       # use your own subnet
+# firewalld: sudo firewall-cmd --permanent --add-service=dns && sudo firewall-cmd --reload
+```
+
+**Check it** from another device: browse a little, then AdGuard Home → Query Log should show that
+device's queries, and Dashboard → *Blocked by filters* should climb.
+
+**Rollback** if DNS breaks: router DNS back to automatic, and Tailscale's override off. See
+[PLAN.md § Network-wide DNS / ad blocking](./PLAN.md#network-wide-dns--ad-blocking).
 
 ---
 
@@ -519,3 +592,8 @@ paths they did before.
 | Containers gone after a reboot                    | 🐧   | Docker not enabled as a service                                               | `sudo systemctl enable --now docker`                                                         |
 | Containers gone after a reboot                    | 🍎   | Docker Desktop not set to start at login                                      | Settings → General → Start Docker Desktop when you log in                                    |
 | Reachable locally, not from other devices         | both | Tailscale DERP relay, or a Linux firewall                                     | See Step 7                                                                                   |
+| AdGuard Home: `bind: address already in use` (53) | 🐧   | `systemd-resolved`'s stub listener holds port 53                              | Step 5.9 — `DNSStubListener=no`                                                              |
+| AdGuard Home UI unreachable after the wizard      | both | Admin port in the wizard set to something other than 3000                     | Set `http.address: 0.0.0.0:3000` in `adguard-home/conf/AdGuardHome.yaml`, restart the stack  |
+| No ads blocked on a device                        | both | The device still uses another DNS server (router secondary, VPN, Private DNS) | Step 8; on Android turn off *Private DNS*; in browsers turn off *Secure DNS*                 |
+| `*.ts.net` names stop resolving                   | both | AdGuard Home sends them to the public upstreams                               | Add upstream `[/ts.net/]100.100.100.100`                                                     |
+| Whole network has no internet, Wi-Fi still up     | both | AdGuard Home (or the host) is down, so DNS is down                            | `docker compose -f adguard-home/docker-compose.yml up -d`, or roll back Step 8               |
