@@ -1,6 +1,7 @@
 # Servers — Docker Home Lab
 
-Eight self-hosted `docker compose` stacks — media, photos, documents, home automation, and a PaaS —
+Nine self-hosted `docker compose` stacks — media, photos, documents, home automation, a PaaS, and a
+network-wide ad blocker —
 that run from the same files on **macOS and Linux**.
 
 ```bash
@@ -21,6 +22,7 @@ $EDITOR .env          # set MEDIA_ROOT and EXTERNAL_STORAGE for your OS
 - **[PLAN.md](./PLAN.md)** — operator reference: services, ports, storage layout, secrets, gotchas.
 - **[REQUIREMENTS.md](./REQUIREMENTS.md)** — CPU, RAM and disk needed, and how the two platforms
   differ in what they can actually do.
+- **[docs/0.2.0.md](./docs/0.2.0.md)** — release notes for AdGuard Home, the network-wide ad blocker.
 - **[docs/0.1.0.md](./docs/0.1.0.md)** — release notes. Read this if you are upgrading a checkout
   that still has `<ROOT_USERNAME>` in its compose files.
 
@@ -28,16 +30,17 @@ $EDITOR .env          # set MEDIA_ROOT and EXTERNAL_STORAGE for your OS
 
 | #   | Service        | Directory         | Port(s)          |
 | --- | -------------- | ----------------- | ---------------- |
-| 1   | audiobookshelf | `audiobookshelf/` | 13378            |
-| 2   | coolify        | `coolify/`        | 8000, 6001, 6002 |
-| 3   | papra-doc      | `papra-doc/`      | 1221             |
-| 4   | home-assistant | `home-assistant/` | 8123             |
-| 5   | jellyfin       | `jellyfin/`       | 8096             |
-| 6   | immich-photos  | `immich-photos/`  | 2283             |
-| 7   | portainer      | `portainer/`      | 9000             |
-| 8   | obsidian-brain | `obsidian-brain/` | 3000 / 3001      |
+| 1   | adguard-home   | `adguard-home/`   | 53 (DNS), 3080   |
+| 2   | audiobookshelf | `audiobookshelf/` | 13378            |
+| 3   | coolify        | `coolify/`        | 8000, 6001, 6002 |
+| 4   | papra-doc      | `papra-doc/`      | 1221             |
+| 5   | home-assistant | `home-assistant/` | 8123             |
+| 6   | jellyfin       | `jellyfin/`       | 8096             |
+| 7   | immich-photos  | `immich-photos/`  | 2283             |
+| 8   | portainer      | `portainer/`      | 9000             |
+| 9   | obsidian-brain | `obsidian-brain/` | 3000 / 3001      |
 
-14 containers in total. The order above is the order `restart-all.sh` uses.
+15 containers in total. The order above is the order `restart-all.sh` uses.
 
 ## Configuration
 
@@ -85,7 +88,8 @@ failed.
 
 ### `test-services.sh`
 
-Health-checks every service and reports Tailscale peer connectivity (`[DIRECT]` / `[RELAY]`).
+Health-checks every service, checks that AdGuard Home answers DNS (and blocks `doubleclick.net`),
+and reports Tailscale peer connectivity (`[DIRECT]` / `[RELAY]`).
 
 ```bash
 ./test-services.sh
@@ -126,6 +130,8 @@ minute, so add it there (or `sudo systemctl stop homelab-stack-guard`) to keep i
   [DOCKER-INSTALL.md](./DOCKER-INSTALL.md)
 - `bash`, `curl`, `openssl` (all present by default on macOS and every mainstream Linux distro)
 - The external storage volume mounted **before** starting any stack
+- 🐧 Linux: port 53 free for AdGuard Home — turn off `systemd-resolved`'s stub listener
+  ([SETUP.md § 5.9](./SETUP.md#59-adguard-home--port-3080-dns-on-53))
 - 🐧 Linux: your user in the `docker` group, and `sudo systemctl enable --now docker`
 - 🍎 macOS: Docker Desktop running, with your home directory and `/Volumes` in its file-sharing list
 

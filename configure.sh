@@ -40,7 +40,7 @@ die() {
 }
 head_() { printf '\n%s\n' "${BOLD}$*${OFF}"; }
 
-SERVICES=(audiobookshelf coolify papra-doc home-assistant jellyfin immich-photos portainer obsidian-brain)
+SERVICES=(adguard-home audiobookshelf coolify papra-doc home-assistant jellyfin immich-photos portainer obsidian-brain)
 
 # ── 1. Detect the platform ───────────────────────────────────────────────────
 head_ "1. Platform"

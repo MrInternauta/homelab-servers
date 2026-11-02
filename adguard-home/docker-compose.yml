@@ -1,0 +1,33 @@
+# AdGuard Home — network-wide DNS ad blocker. http://localhost:3080
+#
+# First start runs a setup wizard on http://localhost:3080. In it, keep the
+# admin web interface on port 3000 (the container side of 3080:3000 — the host's
+# 3000 belongs to Obsidian) and DNS on port 53.
+#
+# Linux: systemd-resolved holds port 53 on 127.0.0.53, which stops Docker from
+# publishing it. Turn off its stub listener first — see SETUP.md § 5.9.
+services:
+  adguardhome:
+    container_name: adguardhome
+    image: adguard/adguardhome:${ADGUARD_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-America/Mexico_City}
+    ports:
+      - 53:53/tcp
+      - 53:53/udp
+      - 3080:3000/tcp
+      # Encrypted DNS for clients — enable it in Settings → Encryption first:
+      # - 853:853/tcp     # DNS-over-TLS
+      # - 8443:443/tcp    # DNS-over-HTTPS
+    volumes:
+      # Both stay on the internal disk: DNS must keep answering while the NAS is
+      # down, and stack-guard only stops stacks that mount the external storage.
+      - ./work:/opt/adguardhome/work
+      - ./conf:/opt/adguardhome/conf
+    # Docker publishes port 53 with its own iptables rules, which run before
+    # ufw/firewalld: it is open on EVERY host address, a public IPv6 one too.
+    # Limit who may query in Settings → DNS settings → Access settings →
+    # Allowed clients (see PLAN.md § Network-wide DNS / ad blocking). Clients
+    # keep their real IPs, so the list works; only queries sent to 127.0.0.1
+    # arrive from the bridge gateway (172.x.0.1).

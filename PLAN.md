@@ -49,8 +49,9 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
 | Portainer      | `portainer/`      | 9000             | `portainer/portainer-ce:lts`                   | Docker management UI                    |
 | Obsidian       | `obsidian-brain/` | 3000 / 3001      | `lscr.io/linuxserver/obsidian`                 | Obsidian vault (web GUI, Chromium)      |
 | Coolify        | `coolify/`        | 8000, 6001, 6002 | `coollabsio/coolify`                           | Self-hosted PaaS (4 containers)         |
+| AdGuard Home   | `adguard-home/`   | 53 (DNS), 3080   | `adguard/adguardhome`                          | Network-wide DNS ad blocker             |
 
-**14 containers** across 8 stacks.
+**15 containers** across 9 stacks.
 
 ## Service Details
 
@@ -87,6 +88,17 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
   🐧 **Linux is where Coolify actually works** — uncomment the Docker socket mount and it can
   deploy to the host. 🍎 On macOS it runs but cannot manage the Mac; it is a dashboard only.
 
+- **adguard-home/** — DNS on port 53 (TCP + UDP), web UI on 3080 (`3080:3000` — the host's 3000
+  is Obsidian, so keep the admin listener at 3000 in the setup wizard). Image tag pinned with
+  `ADGUARD_VERSION` in its `.env`. State in `./work` and `./conf` on the internal disk, never on the
+  NAS: DNS has to keep answering while the share is down, and since the stack mounts nothing from
+  `EXTERNAL_STORAGE`, stack-guard leaves it running during a storage outage. DoT (853) and DoH
+  (`8443:443`) are commented out until encryption is set up in its UI.
+  🐧 Needs `systemd-resolved`'s stub listener turned off to free port 53 (SETUP.md § 5.9).
+  Clients show up with their real IPs (only queries to `127.0.0.1` come from the bridge gateway).
+  **Port 53 bypasses ufw** — restrict it with *Allowed clients*; see
+  [Network-wide DNS / ad blocking](#network-wide-dns--ad-blocking).
+
 ## Storage Layout
 
 Bulk state (Immich uploads and ML cache, Coolify) lives under `${APPDATA_ROOT}` (default
@@ -114,6 +126,7 @@ SQLite locks badly and root is squashed.
 | obsidian       | `./obsidian/config`                                                               | `/config`                                 | rw      |
 | coolify        | `${COOLIFY_STORAGE}/{ssh,applications,databases,services,backups,postgres,redis}` | various under `/var/www/html/storage/app` | rw      |
 | portainer      | `/var/run/docker.sock`, `portainer_data` volume                                   | socket, `/data`                           | rw      |
+| adguard-home   | `./work`, `./conf`                                                                | `/opt/adguardhome/{work,conf}`            | rw      |
 
 **Summary:** local media lives under `${MEDIA_ROOT}/{Audio,Videos,Images,Documents}`; the external
 volume mirrors those four and additionally holds the bulk state under `${APPDATA_ROOT}`
@@ -136,6 +149,7 @@ Every service reads the `.env` next to its compose file, and every service ships
 | `home-assistant/` | `TZ`                                                                                                             | No secrets — HA keeps its own inside `./config` |
 | `obsidian-brain/` | `TZ`, `PUID`, `PGID`                                                                                             | No secrets                                      |
 | `portainer/`      | `TZ`                                                                                                             | No secrets — admin account lives in the volume  |
+| `adguard-home/`   | `TZ`, `ADGUARD_VERSION`                                                                                          | No secrets — admin account lives in `./conf`    |
 | `papra-doc/`      | `AUTH_SECRET`, `TZ`, `PUID`, `PGID`, `MEDIA_ROOT`, `EXTERNAL_STORAGE`                                            | Also loaded into the container via `env_file:`  |
 | `immich-photos/`  | `IMMICH_VERSION`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE_NAME`, `TZ`, `MEDIA_ROOT`, `EXTERNAL_STORAGE`       | Loaded via `env_file:`                          |
 | `coolify/`        | `APP_*`, `DB_*`, `REDIS_PASSWORD`, `PUSHER_APP_*`, `SOKETI_*`, `COOLIFY_STORAGE`, `REGISTRY_URL`, `LATEST_IMAGE` | Loaded via `env_file:`                          |
@@ -171,12 +185,18 @@ http://<machine>.<tailnet>.ts.net:<port>
 Tailscale IP or MagicDNS name to test remote reachability instead of just local binding.
 
 🐧 **Linux firewalls.** macOS ships with its firewall off by default; most Linux distros do not.
-Allow the tailnet interface rather than opening ports to the world:
+Allow the tailnet interface:
 
 ```bash
 sudo ufw allow in on tailscale0                                    # Debian/Ubuntu
 sudo firewall-cmd --permanent --zone=trusted --add-interface=tailscale0 && sudo firewall-cmd --reload   # Fedora/RHEL
 ```
+
+**ufw/firewalld only cover services that run on the host itself** — SSH (22), rpcbind (111),
+Tailscale (41641). Every port a container publishes goes through Docker's own iptables rules, which
+run first, so all the service ports are open on **every** host address — LAN, tailnet, and a public
+IPv6 one — whatever ufw says. What keeps them off the internet is the router; see
+[Public exposure](#public-exposure).
 
 Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` that adds
 `tsdproxy.enable` / `tsdproxy.ephemeral` labels for a Tailscale proxy sidecar.
@@ -185,10 +205,12 @@ Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` t
 
 | Port  | Service                    |
 | ----- | -------------------------- |
+| 53    | AdGuard Home (DNS)         |
 | 1221  | Papra                      |
 | 2283  | Immich                     |
 | 3000  | Obsidian (HTTP GUI)        |
 | 3001  | Obsidian (HTTPS GUI)       |
+| 3080  | AdGuard Home (web UI)      |
 | 6001  | Coolify realtime (soketi)  |
 | 6002  | Coolify realtime (metrics) |
 | 8000  | Coolify UI                 |
@@ -196,6 +218,104 @@ Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` t
 | 8123  | Home Assistant             |
 | 9000  | Portainer                  |
 | 13378 | Audiobookshelf             |
+
+### Public exposure
+
+Every port above is published on all host addresses (see Linux firewalls above), so the only
+thing between the services and the internet is the router. **Checked 2026-11-02, behind the stock
+Starlink router:**
+
+| Path | Result | Why |
+| ---- | ------ | --- |
+| **IPv4** | Not reachable | Starlink CGNAT (shared public IPv4) and no port forwarding or UPnP; `tailscale netcheck` shows `PortMapping:` empty |
+| **IPv6** | Not reachable | External scan ([IPscan](https://ipv6.chappell-family.com/ipv6tcptest/)) of the host's public `2605:59c8:…` address: all 91 tested ports **stealth** — UDP 53 + 18 others; TCP 22, 53, 111, 3000, 3080, 8123, 9000 + ~65 common ports. Those services are listening, so the router is dropping inbound IPv6 |
+
+Not individually tested: 1221, 2283, 3001, 8096, 13378 (the scanner allows four custom ports).
+Given the router dropped every port, including ones with a listener behind them, they are almost
+certainly blocked the same way.
+
+**Re-run the check** after changing the router, enabling Starlink bypass mode, or changing ISP. It
+must run **on the server** (IPscan scans whoever calls it), and running it means accepting IPscan's
+terms. Swap the four custom ports to cover others:
+
+```bash
+H=www66.chappell-family.co.uk
+U="https://$H/cgi-bin6/ipscanfasttxt.cgi"
+Q='includeexisting=1&customport0=9000'
+Q="$Q&customport1=8123&customport2=3000"
+Q="$Q&customport3=3080&termsaccepted=1"
+curl -6 -s -m 120 "$U?$Q" | sed 's/<[^>]*>/ /g' | grep -oE 'Port [0-9]+(\[[0-9]\])? = [A-Z]+'
+```
+
+Anything other than `TCPSTEALTH`/`UDPSTEALTH` means that port is reachable from the internet. Then
+drop inbound IPv6 for the service ports in Docker's `DOCKER-USER` chain (ufw rules won't apply), or
+publish them on the LAN/tailnet addresses only.
+
+## Network-wide DNS / ad blocking
+
+AdGuard Home only blocks ads for devices that use it as their DNS server. Two places hand that out:
+
+| Where                                        | Set                                                         | Covers                         |
+| -------------------------------------------- | ----------------------------------------------------------- | ------------------------------ |
+| Router → DHCP / LAN settings → DNS server    | The host's LAN IP (🐧 `hostname -I`), and **no** secondary  | Every device on the home LAN   |
+| Tailscale admin console → DNS → Nameservers  | The host's Tailscale IP, with **Override local DNS** on     | Every tailnet device, anywhere |
+
+- **No public secondary DNS.** Clients use the secondary whenever they like, not only as a
+  fallback, so ads leak through it.
+- **Keep MagicDNS working.** In Settings → DNS settings → Upstream DNS servers add
+  `[/ts.net/]100.100.100.100`, so tailnet names are still resolved by Tailscale.
+- **The server must not use itself for DNS.** With Override local DNS on, the host would also send
+  its own lookups through AdGuard Home — and when that container is down it couldn't even pull an
+  image to fix it. On the server only: `sudo tailscale set --accept-dns=false`.
+- **Upstreams:** use encrypted ones, e.g. `https://dns.quad9.net/dns-query` and
+  `https://cloudflare-dns.com/dns-query`.
+- **Blocklists:** the default *AdGuard DNS filter* plus *OISD Big* (Filters → DNS blocklists →
+  Add blocklist → Choose from the list) cover most ads and trackers with few false positives.
+- **Access control — not the firewall.** Docker publishes port 53 through its own iptables rules,
+  which run before ufw/firewalld, so a `ufw allow`/`deny` for 53 changes nothing: the port is open
+  on every host address, including a public IPv6 one if the ISP hands those out. An open resolver
+  on the internet gets abused for DDoS amplification. Restrict it in AdGuard Home → Settings → DNS
+  settings → Access settings → **Allowed clients** (one per line; use your own subnets):
+
+  ```text
+  192.168.1.0/24
+  fd99:acd9:1c4f:8::/64
+  100.64.0.0/10
+  fd7a:115c:a1e0::/48
+  172.16.0.0/12
+  ```
+
+  In order: home LAN (IPv4), home LAN (IPv6 ULA), tailnet (IPv4), tailnet (IPv6), and the Docker
+  bridges — queries sent to `127.0.0.1` arrive from the bridge gateway.
+- **Single point of failure.** If this host is down, every client loses DNS — not just ad
+  blocking. **Rollback:** set the router's DNS back to automatic and turn off the Tailscale
+  nameserver override. A second AdGuard Home on another machine (synced with `adguardhome-sync`)
+  removes the single point of failure.
+- **A site breaks?** Query Log → find the blocked domain → *Unblock*. That adds an allowlist rule.
+
+### Behind a Starlink router
+
+The stock Starlink router does not let you change the DNS server it hands out — it always gives
+clients itself (`192.168.1.1`, plus an IPv6 `fd…::1` address), and its DHCP can't be turned off.
+So the router row in the table above isn't available. In order of preference:
+
+| Option                               | How                                                                                                                  | Covers                                  |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| **Tailscale DNS** (recommended)      | The Tailscale row above. Override local DNS applies on the home Wi-Fi too                                            | Every device that runs Tailscale        |
+| **Manual DNS per device**            | In the device's network settings: IPv4 DNS = host's LAN IP, IPv6 DNS = host's ULA (see below). Set **both**          | TVs, consoles, anything without Tailscale |
+| **Own router behind Starlink**       | Starlink app → Router → *Bypass mode* (or the Starlink Ethernet adapter), then set DNS on your router as in the table above | The whole LAN — the only true network-wide option |
+
+- **Set the IPv6 DNS too.** The Starlink router advertises its own IPv6 DNS server; a device with
+  only the IPv4 DNS changed will keep asking Starlink over IPv6 and ads get through. Use the host's
+  ULA (the `fd…` address), not its `2605:59c8:…` address — Starlink's public IPv6 prefix can change.
+  🐧 Find it with `ip -6 addr show scope global | grep -o 'fd[0-9a-f:]*'`. AdGuard Home already
+  listens on IPv6 (`[::]:53`).
+- **Starlink hands out public IPv6**, so port 53 is published on a `2605:59c8:…` address too.
+  The *Allowed clients* list above is what keeps that from being an open resolver.
+- **Don't turn on AdGuard Home's DHCP server.** Starlink's DHCP keeps running, and two DHCP
+  servers on one LAN hand out conflicting leases.
+- **Bypass mode turns off Starlink's Wi-Fi** — your own router must provide it. Only worth it
+  when the manual-DNS list gets long.
 
 ## Common Tasks
 
@@ -211,7 +331,7 @@ Portainer has an alternate compose file `portainer/compose-with-tsdproxy.yaml` t
 ./restart-all.sh            # --no-pull to skip pulling, --no-test to skip the health check
 ```
 
-It iterates `audiobookshelf → coolify → papra-doc → home-assistant → jellyfin → immich-photos →
+It iterates `adguard-home → audiobookshelf → coolify → papra-doc → home-assistant → jellyfin → immich-photos →
 portainer → obsidian-brain`, skips any directory with no compose file or no `.env`, finishes by
 invoking `test-services.sh`, and exits non-zero if any stack failed.
 
@@ -249,13 +369,20 @@ docker compose -f <service-dir>/docker-compose.yml up -d --remove-orphans
   `1000:1000`. They come from `id -u` / `id -g` via `configure.sh`. Get them wrong and every file
   the containers write is owned by a user that does not exist on the host.
 - 🐧 **Linux firewall and the `docker` group** are the two things macOS does not make you think
-  about. `sudo usermod -aG docker $USER` and allow `tailscale0`.
+  about. `sudo usermod -aG docker $USER` and allow `tailscale0`. ufw does **not** filter the
+  container ports — Docker bypasses it; see [Public exposure](#public-exposure).
 - 🐧 **`sudo systemctl enable docker`** — `restart: unless-stopped` is meaningless if the daemon
   never starts at boot.
 - `immich-photos` upgrades may require **DB migrations** — watch `immich_db` logs after a pull.
   Pin `IMMICH_VERSION` in its `.env` if you want to control when that happens.
 - `coolify`'s UI waits on Postgres/Redis/soketi healthchecks; slow storage makes first start take a
   while. Check `docker compose -f coolify/docker-compose.yml ps` before assuming it failed.
+- **`adguard-home` and port 53** (🐧): `systemd-resolved` listens on `127.0.0.53:53`, so Docker
+  can't publish `0.0.0.0:53` until its stub listener is off (SETUP.md § 5.9). A `bind: address
+  already in use` on `adguard-home` means that step was skipped or undone.
+- **DNS outages are network outages.** When AdGuard Home is down every client that uses it stops
+  resolving names. Bring it back first, or roll back the router/Tailscale DNS (see
+  [Network-wide DNS / ad blocking](#network-wide-dns--ad-blocking)).
 - `home-assistant` runs privileged with `NET_ADMIN`/`NET_RAW` — treat its config directory as
   security-sensitive.
 - `restart-all.sh` is the source of truth for which services exist and in what order they restart;
@@ -302,6 +429,10 @@ Add a port forwarding rule in your router admin panel:
 | Internal port | 41641                                                              |
 
 This lets Tailscale establish direct P2P connections instead of going through DERP.
+
+> **Starlink:** this fix isn't available. Starlink puts you behind carrier-grade NAT (no public
+> IPv4) and its router has no port forwarding. Tailscale still works, just more often over DERP;
+> peers that also have IPv6 can usually connect directly over Starlink's native IPv6.
 
 ### Verify After Fix
 

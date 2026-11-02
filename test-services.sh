@@ -57,6 +57,28 @@ check "papra" 1221
 check "audiobookshelf" 13378
 check "obsidian" 3000
 check "coolify" 8000
+check "adguard" 3080
+echo
+
+echo "=== DNS (AdGuard Home on ${SERVICE_HOST}:53) ==="
+if ! command -v dig >/dev/null 2>&1; then
+	echo "  [SKIP] dig not found — install dnsutils (Debian/Ubuntu) or bind-utils (Fedora/RHEL)"
+else
+	answer=$(dig +short +time=3 +tries=1 @"${SERVICE_HOST}" example.com A 2>/dev/null | grep -v "^;" | tail -n1)
+	if [[ ${answer} =~ ^[0-9.]+$ ]]; then
+		printf '  [OK]   %-15s resolves to %s\n' "example.com" "${answer}"
+	else
+		printf '  [FAIL] %-15s no answer from %s:53\n' "example.com" "${SERVICE_HOST}"
+		fails=$((fails + 1))
+	fi
+	# Informational: a blocklist hit answers 0.0.0.0. A real IP means no list blocks it yet.
+	answer=$(dig +short +time=3 +tries=1 @"${SERVICE_HOST}" doubleclick.net A 2>/dev/null | grep -v "^;" | tail -n1)
+	if [[ ${answer} == "0.0.0.0" ]]; then
+		printf '  [OK]   %-15s blocked\n' "doubleclick.net"
+	else
+		printf '  [WARN] %-15s not blocked (%s) — check the blocklists in AdGuard Home\n' "doubleclick.net" "${answer:-no answer}"
+	fi
+fi
 echo
 
 echo "=== Tailscale ==="
