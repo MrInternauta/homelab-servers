@@ -226,7 +226,6 @@ Everything runs with defaults. These are the knobs worth turning on each OS.
 | **Immich ML on GPU**              | `immich-photos/docker-compose.yml`     | Use the `-cuda` image tag and uncomment `deploy:` — imports go from hours to minutes     |
 | **Coolify manages the host**      | `coolify/docker-compose.yml`           | Uncomment the `/var/run/docker.sock` mount — this is the whole point of Coolify          |
 | **Coolify storage on local disk** | `coolify/.env` → `COOLIFY_STORAGE`     | Postgres on NFS/SMB is slow and corruption-prone. Point it at e.g. `/data/coolify`       |
-| **AdGuard Home client IPs**       | `adguard-home/docker-compose.yml`      | Uncomment `network_mode: host` — per-client stats and rules then see real IPs            |
 
 Driver prerequisites for the GPU rows are in
 [DOCKER-INSTALL.md § Optional Linux extras](./DOCKER-INSTALL.md#optional-linux-extras).
@@ -483,12 +482,21 @@ AdGuard Home (5.9) only filters devices that use it for DNS. Hand it out in two 
    on the tailnet are then filtered on any network. On **the server itself** run
    `sudo tailscale set --accept-dns=false`, so the host never depends on its own container for DNS.
 
-🐧 Let the LAN reach port 53 (the tailnet is already allowed by Step 7):
+**Restrict who can query it.** Docker publishes port 53 past ufw/firewalld, so the firewall
+neither opens nor closes it — it is reachable on every host address, a public IPv6 one included.
+In AdGuard Home → Settings → DNS settings → Access settings → **Allowed clients**, enter (your own
+subnets; see `hostname -I` and `ip -6 addr`):
 
-```bash
-sudo ufw allow from 192.168.1.0/24 to any port 53       # use your own subnet
-# firewalld: sudo firewall-cmd --permanent --add-service=dns && sudo firewall-cmd --reload
+```text
+192.168.1.0/24
+fd99:acd9:1c4f:8::/64
+100.64.0.0/10
+fd7a:115c:a1e0::/48
+172.16.0.0/12
 ```
+
+The last line covers queries to `127.0.0.1` (they arrive from the Docker bridge), which
+`test-services.sh` relies on.
 
 ### Behind a Starlink router
 
@@ -503,11 +511,8 @@ ip -6 addr show scope global | grep -o 'fd[0-9a-f:]*'   # IPv6 DNS → the host'
 
 Set **both** on each device — with only IPv4 changed, it keeps asking the Starlink router over
 IPv6 and ads get through. Use the `fd…` address, not the `2605:59c8:…` one (Starlink can change
-that prefix). Then let the IPv6 LAN through the firewall too:
-
-```bash
-sudo ufw allow from fd99:acd9:1c4f:8::/64 to any port 53    # use your own /64
-```
+that prefix). Make sure your `fd…/64` is in **Allowed clients** (above) — Starlink also gives the
+host a public IPv6 address, and that list is what keeps it from being an open resolver.
 
 For true network-wide blocking, put your own router behind Starlink (Starlink app → Router →
 *Bypass mode*, which also turns off Starlink's Wi-Fi) and do item 1 on that router. Don't enable

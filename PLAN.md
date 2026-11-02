@@ -94,9 +94,10 @@ required variable MEDIA_ROOT is missing a value: set MEDIA_ROOT in .env — run 
   NAS: DNS has to keep answering while the share is down, and since the stack mounts nothing from
   `EXTERNAL_STORAGE`, stack-guard leaves it running during a storage outage. DoT (853) and DoH
   (`8443:443`) are commented out until encryption is set up in its UI.
-  🐧 Needs `systemd-resolved`'s stub listener turned off to free port 53 (SETUP.md § 5.9). Behind
-  Docker's NAT every client shows up as the bridge gateway; `network_mode: host` (commented block)
-  shows real client IPs. See [Network-wide DNS / ad blocking](#network-wide-dns--ad-blocking).
+  🐧 Needs `systemd-resolved`'s stub listener turned off to free port 53 (SETUP.md § 5.9).
+  Clients show up with their real IPs (only queries to `127.0.0.1` come from the bridge gateway).
+  **Port 53 bypasses ufw** — restrict it with *Allowed clients*; see
+  [Network-wide DNS / ad blocking](#network-wide-dns--ad-blocking).
 
 ## Storage Layout
 
@@ -232,8 +233,22 @@ AdGuard Home only blocks ads for devices that use it as their DNS server. Two pl
   `https://cloudflare-dns.com/dns-query`.
 - **Blocklists:** the default *AdGuard DNS filter* plus *OISD Big* (Filters → DNS blocklists →
   Add blocklist → Choose from the list) cover most ads and trackers with few false positives.
-- **Firewall (🐧):** `tailscale0` is already trusted; the LAN needs port 53 too:
-  `sudo ufw allow from 192.168.1.0/24 to any port 53` (use your own subnet).
+- **Access control — not the firewall.** Docker publishes port 53 through its own iptables rules,
+  which run before ufw/firewalld, so a `ufw allow`/`deny` for 53 changes nothing: the port is open
+  on every host address, including a public IPv6 one if the ISP hands those out. An open resolver
+  on the internet gets abused for DDoS amplification. Restrict it in AdGuard Home → Settings → DNS
+  settings → Access settings → **Allowed clients** (one per line; use your own subnets):
+
+  ```text
+  192.168.1.0/24
+  fd99:acd9:1c4f:8::/64
+  100.64.0.0/10
+  fd7a:115c:a1e0::/48
+  172.16.0.0/12
+  ```
+
+  In order: home LAN (IPv4), home LAN (IPv6 ULA), tailnet (IPv4), tailnet (IPv6), and the Docker
+  bridges — queries sent to `127.0.0.1` arrive from the bridge gateway.
 - **Single point of failure.** If this host is down, every client loses DNS — not just ad
   blocking. **Rollback:** set the router's DNS back to automatic and turn off the Tailscale
   nameserver override. A second AdGuard Home on another machine (synced with `adguardhome-sync`)
@@ -257,8 +272,8 @@ So the router row in the table above isn't available. In order of preference:
   ULA (the `fd…` address), not its `2605:59c8:…` address — Starlink's public IPv6 prefix can change.
   🐧 Find it with `ip -6 addr show scope global | grep -o 'fd[0-9a-f:]*'`. AdGuard Home already
   listens on IPv6 (`[::]:53`).
-- **Firewall (🐧):** allow the IPv6 LAN as well as the IPv4 one:
-  `sudo ufw allow from fd99:acd9:1c4f:8::/64 to any port 53` (use your own `/64`).
+- **Starlink hands out public IPv6**, so port 53 is published on a `2605:59c8:…` address too.
+  The *Allowed clients* list above is what keeps that from being an open resolver.
 - **Don't turn on AdGuard Home's DHCP server.** Starlink's DHCP keeps running, and two DHCP
   servers on one LAN hand out conflicting leases.
 - **Bypass mode turns off Starlink's Wi-Fi** — your own router must provide it. Only worth it

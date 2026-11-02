@@ -25,11 +25,9 @@ services:
       # down, and stack-guard only stops stacks that mount the external storage.
       - ./work:/opt/adguardhome/work
       - ./conf:/opt/adguardhome/conf
-
-    # ── Linux only: host networking ──────────────────────────────────────────
-    # Behind Docker's NAT every query appears to come from the bridge gateway
-    # (172.x.0.1), so per-client stats and rules are useless. Host networking
-    # shows the real client IPs. Uncomment it and comment out the `ports` block
-    # above; the admin UI then listens on the host's port 3000 — which clashes
-    # with Obsidian, so pick another port in the setup wizard.
-    # network_mode: host
+    # Docker publishes port 53 with its own iptables rules, which run before
+    # ufw/firewalld: it is open on EVERY host address, a public IPv6 one too.
+    # Limit who may query in Settings → DNS settings → Access settings →
+    # Allowed clients (see PLAN.md § Network-wide DNS / ad blocking). Clients
+    # keep their real IPs, so the list works; only queries sent to 127.0.0.1
+    # arrive from the bridge gateway (172.x.0.1).
